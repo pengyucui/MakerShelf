@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密安全报告
+    url: https://github.com/pengyucui/MakerShelf/security/advisories/new
+    about: 请在这里私下报告漏洞、令牌或隐私问题
+  - name: 使用帮助
+    url: https://github.com/pengyucui/MakerShelf/blob/main/SUPPORT.md
+    about: 查看提问方式和需要提供的信息

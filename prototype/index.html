@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f6f4">
+  <title>MakerShelf · 你的本地模型馆</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- 中文界面原型：A 工作台、B 灵感画廊、C 下载控制台；全部使用内存演示数据。 -->
+  <div id="app"></div>
+  <div id="overlay-root"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <nav class="prototype-switcher" aria-label="界面方案切换">
+    <span class="prototype-label">界面提案</span>
+    <button id="previous-variant" aria-label="上一个方案">←</button>
+    <button id="variant-label" title="点击切换方案"></button>
+    <button id="next-variant" aria-label="下一个方案">→</button>
+  </nav>
+  <script src="app.js"></script>
+</body>
+</html>

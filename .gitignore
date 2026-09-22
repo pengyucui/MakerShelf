@@ -1,0 +1,19 @@
+# macOS 本机文件
+.DS_Store
+
+# Xcode 用户状态与构建产物
+DerivedData/
+build/
+dist/
+*.xcuserstate
+xcuserdata/
+**/xcuserdata/
+*.xcarchive
+*.dSYM/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+.swiftpm/
+
+# 本地发布暂存目录
+.release/

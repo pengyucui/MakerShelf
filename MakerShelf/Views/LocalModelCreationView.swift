@@ -29,11 +29,10 @@ struct LocalModelEditView: View {
                 .keyboardShortcut(.cancelAction)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("EDIT LOCAL MODEL")
-                        .font(.system(size: 8, weight: .semibold))
-                        .tracking(1.3)
-                        .foregroundStyle(ShelfTheme.green)
-                    Text("编辑本地模型")
+                    Text("本地资料")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ShelfTheme.muted)
+                    Text("编辑模型")
                         .font(.system(size: 20, weight: .semibold))
                 }
                 Spacer()
@@ -62,13 +61,13 @@ struct LocalModelEditView: View {
         }
         .padding(24)
         .frame(width: 940)
-        .background(.regularMaterial)
+        .background(ShelfTheme.canvas)
         .foregroundStyle(ShelfTheme.ink)
         .onDisappear { store.cancelSave() }
     }
 }
 
-/// Native Glass 版的本地模型编辑器。新建与编辑共用同一套表单，文件操作仍交给后台服务。
+/// Appica V2 本地模型编辑器。新建与编辑共用同一套表单，文件操作仍交给后台服务。
 @MainActor
 struct LocalModelCreationView: View {
     @Bindable var store: LocalModelStore
@@ -113,7 +112,7 @@ struct LocalModelCreationView: View {
             VStack(alignment: .leading, spacing: 20) {
                 if showsIntro {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(existing == nil ? "从你的 Mac 添加模型" : "编辑本地模型")
+                        Text(existing == nil ? "从你的 Mac 添加模型" : "编辑模型")
                             .font(.system(size: 17, weight: .semibold))
                         Text(existing == nil
                              ? "模型文件、介绍与展示图片会被复制到归档目录，来源文件保持不变。"
@@ -198,8 +197,7 @@ struct LocalModelCreationView: View {
         }
         .scrollIndicators(.visible)
         .frame(height: 520)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.52)))
+        .shelfSurface()
     }
 
     private var modelFileSection: some View {
@@ -209,19 +207,19 @@ struct LocalModelCreationView: View {
                     VStack(spacing: 9) {
                         Image(systemName: isDropTargeted ? "arrow.down.doc.fill" : "cube.transparent")
                             .font(.system(size: 25, weight: .light))
-                            .foregroundStyle(isDropTargeted ? .white : ShelfTheme.green)
+                            .foregroundStyle(isDropTargeted ? ShelfTheme.onAccent : ShelfTheme.ink)
                         Text(isDropTargeted ? "松开以添加模型" : "拖入 3MF、STL 或 STEP 文件")
                             .font(.system(size: 12, weight: .medium))
                         Text("也可点按这里使用系统文件选择器 · 支持多选")
                             .font(.system(size: 10))
-                            .foregroundStyle(isDropTargeted ? .white.opacity(0.82) : ShelfTheme.muted)
+                            .foregroundStyle(isDropTargeted ? ShelfTheme.onAccent.opacity(0.82) : ShelfTheme.muted)
                     }
                     .frame(maxWidth: .infinity, minHeight: 96)
-                    .background(isDropTargeted ? ShelfTheme.green.opacity(0.9) : ShelfTheme.sidebar.opacity(0.72),
+                    .background(isDropTargeted ? ShelfTheme.accent : ShelfTheme.recessed,
                                 in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay {
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(isDropTargeted ? Color.white.opacity(0.75) : ShelfTheme.green.opacity(0.35),
+                            .strokeBorder(isDropTargeted ? ShelfTheme.onAccent.opacity(0.75) : ShelfTheme.line,
                                           style: StrokeStyle(lineWidth: 1, dash: [6, 5]))
                     }
                 }
@@ -258,7 +256,7 @@ struct LocalModelCreationView: View {
                                 .font(.system(size: 22, weight: .light))
                             Text("添加图片").font(.system(size: 10, weight: .medium))
                         }
-                        .foregroundStyle(ShelfTheme.green)
+                        .foregroundStyle(ShelfTheme.ink)
                         .frame(width: 104, height: 78)
                         .background(ShelfTheme.sidebar.opacity(0.72), in: RoundedRectangle(cornerRadius: 9))
                         .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(ShelfTheme.line))
@@ -281,57 +279,38 @@ struct LocalModelCreationView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(ShelfTheme.muted)
 
+            // 预览沿用主网格的封面比例与信息节奏；未保存时不提前标记“已归档”。
             VStack(alignment: .leading, spacing: 0) {
-                ZStack(alignment: .topLeading) {
-                    Group {
+                ShelfTheme.recessed
+                    .aspectRatio(4.0 / 3.0, contentMode: .fit)
+                    .overlay {
                         if let cover = store.imageFiles.first {
-                            ModelArtwork(source: .file(cover), pixels: 480)
+                            ModelArtwork(source: .file(cover), pixels: 640).padding(5)
                         } else {
                             Image(systemName: "cube.transparent")
-                                .font(.system(size: 44, weight: .ultraLight))
+                                .font(.system(size: 38, weight: .ultraLight))
                                 .foregroundStyle(ShelfTheme.muted.opacity(0.45))
                         }
                     }
-                    .frame(maxWidth: .infinity, minHeight: 176, maxHeight: 176)
-                    .background(ShelfTheme.sidebar.opacity(0.72))
-
-                    Text("LOCAL")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .tracking(1)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .foregroundStyle(.white)
-                        .background(.orange.opacity(0.82), in: Capsule())
-                        .padding(10)
+                    .clipShape(RoundedRectangle(cornerRadius: 11))
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(previewTitle).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                    Text(previewAuthor).font(.system(size: 12)).foregroundStyle(ShelfTheme.muted).lineLimit(1)
+                    // 编辑站点归档时沿用来源信息，只有新建模型才标为“本地模型”。
+                    Text("\(existing?.sourceLabel ?? "本地模型") · \(store.modelFiles.count) 个文件")
+                        .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted)
+                    Label(existing == nil ? "保存后归档" : "保存后更新归档", systemImage: "folder")
+                        .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted)
                 }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(previewTitle)
-                        .font(.system(size: 15, weight: .semibold))
-                        .lineLimit(2)
-                    Label(previewAuthor, systemImage: "person.crop.circle")
-                        .font(.system(size: 10))
-                        .foregroundStyle(ShelfTheme.muted)
-                        .lineLimit(1)
-                    Divider()
-                    HStack {
-                        Label("本地模型", systemImage: "externaldrive")
-                        Spacer()
-                        Label("已归档", systemImage: "checkmark")
-                    }
-                    .font(.system(size: 10))
-                    .foregroundStyle(ShelfTheme.green)
-                }
-                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
             }
-            .background(ShelfTheme.card.opacity(0.76), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.6)))
-            .shadow(color: ShelfTheme.ink.opacity(0.08), radius: 18, y: 8)
+            .padding(6)
+            .shelfSurface()
 
             Label("完整本地归档", systemImage: "checkmark.seal.fill")
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(ShelfTheme.green)
+                .foregroundStyle(ShelfTheme.ink)
 
             VStack(alignment: .leading, spacing: 7) {
                 Text("保存位置")
@@ -355,8 +334,7 @@ struct LocalModelCreationView: View {
         }
         .padding(16)
         .frame(height: 520, alignment: .top)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.58)))
+        .shelfSurface()
     }
 
     private var footer: some View {
@@ -405,14 +383,14 @@ struct LocalModelCreationView: View {
     private func selectedFileRow(_ url: URL) -> some View {
         HStack(spacing: 9) {
             Image(systemName: "cube.transparent")
-                .foregroundStyle(ShelfTheme.green)
+                .foregroundStyle(ShelfTheme.ink)
             Text(url.lastPathComponent)
                 .font(.system(size: 11))
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
             Text(url.pathExtension.uppercased())
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(ShelfTheme.muted)
             Button { store.removeModelFile(url) } label: {
                 Image(systemName: "xmark")
@@ -442,21 +420,21 @@ struct LocalModelCreationView: View {
 
             if index == 0 {
                 Text("封面")
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: 10, weight: .medium))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .background(ShelfTheme.green)
-                    .foregroundStyle(.white)
+                    .background(ShelfTheme.accent)
+                    .foregroundStyle(ShelfTheme.onAccent)
                     .clipShape(Capsule())
                     .padding(5)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             } else {
                 Button("设为封面") { store.setCover(url) }
                     .buttonStyle(.plain)
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: 10, weight: .medium))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .background(.regularMaterial, in: Capsule())
+                    .background(ShelfTheme.card, in: Capsule())
                     .padding(5)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             }

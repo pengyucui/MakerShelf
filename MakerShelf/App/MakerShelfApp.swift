@@ -8,12 +8,12 @@ struct MakerShelfApp: App {
         Window("MakerShelf", id: "main") {
             ContentView(app: app)
         }
-        .defaultSize(width: 1_420, height: 950)
-        .windowToolbarStyle(.unified(showsTitle: true))
+        .defaultSize(width: 1_560, height: 980)
+        .windowToolbarStyle(.unified(showsTitle: false))
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("导入模型…") { app.sheet = .importModels }.keyboardShortcut("n", modifiers: .command)
+                Button("添加模型…") { app.sheet = .importModels }.keyboardShortcut("n", modifiers: .command)
             }
             CommandGroup(replacing: .appSettings) {
                 Button("设置…") { app.section = .settings }.keyboardShortcut(",", modifiers: .command)

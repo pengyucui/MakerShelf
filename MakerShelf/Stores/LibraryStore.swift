@@ -5,6 +5,8 @@ import Observation
 final class LibraryStore {
     var query = LibraryQuery()
     var layout: LibraryLayout = .grid
+    /// 跨页面保存搜索焦点请求，不与筛选查询绑定，避免无意义地重新加载目录。
+    var searchFocusRequest = 0
     private(set) var records: [ModelRecord] = []
     private(set) var total = 0
     private(set) var statistics = LibraryStatistics()

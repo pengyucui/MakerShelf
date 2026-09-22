@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// 方案 A 的共享视觉语义，避免每个页面分别维护色值与间距。
 enum AppVersion {
     static var label: String {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
@@ -10,16 +9,30 @@ enum AppVersion {
     }
 }
 
+/// Appica V2 视觉语义。深墨色表达操作，绿色只表达成功状态；深色外观使用对应的语义色。
 enum ShelfTheme {
-    // 使用系统语义色承接浅色与深色外观，玻璃材质仍保留统一的森林绿品牌色。
-    static let canvas = Color(nsColor: .windowBackgroundColor)
-    static let sidebar = Color(nsColor: .underPageBackgroundColor)
-    static let ink = Color.primary
-    static let muted = Color.secondary
-    static let green = Color(hex: "326D50")
-    static let selection = green.opacity(0.13)
-    static let line = Color.primary.opacity(0.09)
-    static let card = Color(nsColor: .controlBackgroundColor)
+    static let canvas = adaptive("F5F7FA", dark: "151920")
+    static let sidebar = adaptive("F0F3F8", dark: "1A202A")
+    static let ink = adaptive("111827", dark: "E8EDF5")
+    static let muted = adaptive("68758C", dark: "A2AEC0")
+    static let accent = adaptive("111827", dark: "DEE7F4")
+    static let onAccent = adaptive("FFFFFF", dark: "17202E")
+    static let green = adaptive("16865E", dark: "67D5AD")
+    static let selection = adaptive("E8EDF4", dark: "303B4C")
+    static let line = adaptive("E3E8F0", dark: "343E4D")
+    static let card = adaptive("FFFFFF", dark: "212833")
+    static let recessed = adaptive("F1F4F8", dark: "19212D")
+    static let shadow = Color.black.opacity(0.045)
+
+    private static func adaptive(_ light: String, dark: String) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            let value = UInt32(hex, radix: 16) ?? 0
+            return NSColor(srgbRed: CGFloat((value >> 16) & 255) / 255,
+                           green: CGFloat((value >> 8) & 255) / 255,
+                           blue: CGFloat(value & 255) / 255, alpha: 1)
+        })
+    }
 }
 
 extension Color {
@@ -30,23 +43,62 @@ extension Color {
     }
 }
 
+/// 毛玻璃仅用于窗口边缘的大容器；尊重系统“减少透明度”，不在每个模型卡片上重复模糊。
+struct ShelfChrome: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        if reduceTransparency {
+            ShelfTheme.sidebar
+        } else {
+            Rectangle().fill(.ultraThinMaterial)
+                .overlay(ShelfTheme.sidebar.opacity(0.45))
+        }
+    }
+}
+
+/// 统一白色表面、细边框与轻阴影，滚动内容使用实色以减少合成开销。
+private struct ShelfSurface: ViewModifier {
+    var radius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .background(ShelfTheme.card, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(ShelfTheme.line.opacity(0.7)))
+            .shadow(color: ShelfTheme.shadow, radius: 8, y: 3)
+    }
+}
+
+extension View {
+    func shelfSurface(radius: CGFloat = 16) -> some View {
+        modifier(ShelfSurface(radius: radius))
+    }
+}
+
 struct PrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.system(size: 12, weight: .medium))
+        configuration.label.font(.system(size: 12, weight: .semibold))
             .padding(.horizontal, 15).padding(.vertical, 11)
-            .foregroundStyle(.white)
-            .background(ShelfTheme.green.opacity(configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 8))
-            .shadow(color: ShelfTheme.green.opacity(configuration.isPressed ? 0 : 0.16), radius: 5, y: 2)
+            .foregroundStyle(ShelfTheme.onAccent)
+            .background(ShelfTheme.accent.opacity(configuration.isPressed ? 0.82 : 1),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .opacity(isEnabled ? 1 : 0.4)
     }
 }
 
 struct QuietButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 12, weight: .medium))
-            .padding(.horizontal, 12).padding(.vertical, 9)
+            .padding(.horizontal, 12).padding(.vertical, 10)
             .foregroundStyle(ShelfTheme.ink)
-            .background(configuration.isPressed ? ShelfTheme.selection : ShelfTheme.card.opacity(0.72), in: RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(ShelfTheme.line))
+            .background(configuration.isPressed ? ShelfTheme.selection : ShelfTheme.card,
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(ShelfTheme.line))
+            .opacity(isEnabled ? 1 : 0.4)
     }
 }
 
@@ -54,12 +106,13 @@ struct QuietButtonStyle: ButtonStyle {
 struct NoticeBanner: View {
     let text: String
     var symbol = "info.circle"
+
     var body: some View {
         Label(text, systemImage: symbol)
             .font(.system(size: 12)).foregroundStyle(ShelfTheme.muted)
             .lineSpacing(4).frame(maxWidth: .infinity, alignment: .leading)
-            .padding(13).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ShelfTheme.line))
+            .padding(13).background(ShelfTheme.recessed, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(ShelfTheme.line))
     }
 }
 
@@ -67,10 +120,11 @@ struct NoticeBanner: View {
 struct PageHeading: View {
     let title: String
     let subtitle: String
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             Text(title).font(.system(size: 27, weight: .semibold)).tracking(-0.5)
-            Text(subtitle).font(.system(size: 11)).foregroundStyle(ShelfTheme.muted).lineSpacing(3)
+            Text(subtitle).font(.system(size: 12)).foregroundStyle(ShelfTheme.muted).lineSpacing(3)
         }
     }
 }
@@ -79,9 +133,15 @@ struct PageHeading: View {
 struct StatusLabel: View {
     let downloaded: Bool
     var demo = false
+
     var body: some View {
-        Label(downloaded ? (demo ? "已归档 · 示例" : "已归档") : "未下载", systemImage: downloaded ? "checkmark" : "arrow.down.circle")
-            .font(.system(size: 10)).foregroundStyle(downloaded ? ShelfTheme.green : ShelfTheme.muted)
+        HStack(spacing: 7) {
+            Circle().fill(downloaded ? ShelfTheme.green : ShelfTheme.muted.opacity(0.6))
+                .frame(width: 7, height: 7)
+            Text(downloaded ? (demo ? "已归档 · 示例" : "已归档") : "未下载")
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(ShelfTheme.muted)
     }
 }
 
@@ -92,24 +152,24 @@ struct EmptyShelf: View {
     let symbol: String
     var actionTitle: String? = nil
     var action: (() -> Void)? = nil
+
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: symbol).font(.system(size: 34, weight: .light)).foregroundStyle(ShelfTheme.green.opacity(0.72))
-                .frame(width: 68, height: 68).background(ShelfTheme.selection, in: RoundedRectangle(cornerRadius: 18))
+            Image(systemName: symbol).font(.system(size: 32, weight: .light)).foregroundStyle(ShelfTheme.ink)
+                .frame(width: 68, height: 68).background(ShelfTheme.recessed, in: RoundedRectangle(cornerRadius: 18))
             Text(title).font(.system(size: 17, weight: .semibold))
-            Text(description).font(.system(size: 11)).foregroundStyle(ShelfTheme.muted)
+            Text(description).font(.system(size: 12)).foregroundStyle(ShelfTheme.muted)
                 .multilineTextAlignment(.center).lineSpacing(4).frame(maxWidth: 420)
             if let actionTitle, let action {
                 Button(action: action) { Label(actionTitle, systemImage: "plus") }
                     .buttonStyle(PrimaryButtonStyle()).padding(.top, 6)
             }
         }.padding(28).frame(maxWidth: .infinity, minHeight: 250)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(ShelfTheme.line))
+            .shelfSurface()
     }
 }
 
-/// 全局玻璃面板，统一主要页面的圆角、边框与轻阴影。
+/// 沿用既有面板调用入口，内部统一改用 Appica 实色卡片，避免表单内多层毛玻璃。
 @MainActor
 struct GlassPanel<Content: View>: View {
     let padding: CGFloat
@@ -121,10 +181,6 @@ struct GlassPanel<Content: View>: View {
     }
 
     var body: some View {
-        content
-            .padding(padding)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(ShelfTheme.line))
-            .shadow(color: ShelfTheme.ink.opacity(0.035), radius: 9, y: 4)
+        content.padding(padding).shelfSurface()
     }
 }

@@ -27,7 +27,7 @@ struct SettingsView: View {
 
     private var accounts: some View {
         VStack(alignment: .leading, spacing: 24) {
-            NoticeBanner(text: "两站分别连接。会话保存在本应用的数据保护钥匙串中，安装后只需授权一次；之后进入设置只读取内存中的登录状态。打开模型库不会访问钥匙串。当前版本 \(AppVersion.label)。")
+            NoticeBanner(text: "中文站与国际站分别登录。连接账号后，可以导入自己的收藏与作品，并下载对应站点的模型。")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 480), spacing: 14)], alignment: .leading, spacing: 14) {
                 ForEach(MakerSite.allCases) { site in
                     AccountCard(site: site, state: sessions.states[site] ?? .disconnected,
@@ -44,7 +44,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("账号与内容来源", systemImage: "person.2").font(.system(size: 12, weight: .semibold))
                     Text("下载使用对应站点的登录状态。当前账号可读取收藏与发布内容；指定作者可按用户名、用户 ID 或主页链接读取公开发布模型。")
-                        .font(.system(size: 10)).foregroundStyle(ShelfTheme.muted).lineSpacing(4)
+                        .font(.system(size: 12)).foregroundStyle(ShelfTheme.muted).lineSpacing(4)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -113,20 +113,19 @@ private struct AccountCard: View {
                     .foregroundStyle(site == .china ? ShelfTheme.green : .blue.opacity(0.6))
                     .frame(width: 48, height: 48).background(ShelfTheme.sidebar, in: RoundedRectangle(cornerRadius: 12))
                 Spacer()
-                Text(statusText).font(.system(size: 9, weight: .medium))
+                Text(statusText).font(.system(size: 11, weight: .medium))
                     .foregroundStyle(state.isConnected ? ShelfTheme.green : ShelfTheme.muted)
                     .padding(.horizontal, 7).padding(.vertical, 4)
                     .background((state.isConnected ? ShelfTheme.green : ShelfTheme.muted).opacity(0.1), in: Capsule())
             }
             Text("MakerWorld \(site.title)").font(.system(size: 16, weight: .semibold))
-            Text(site.domain).font(.system(size: 10)).foregroundStyle(ShelfTheme.muted)
+            Text(site.domain).font(.system(size: 12)).foregroundStyle(ShelfTheme.muted)
             Divider()
             Label(state.isConnected ? detail : "连接后可导入该站点的收藏", systemImage: "person.crop.circle")
                 .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted).lineLimit(2)
             Button(state.isConnected ? "断开连接" : "打开登录页", action: action).buttonStyle(QuietButtonStyle())
         }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(ShelfTheme.line))
+            .shelfSurface()
     }
 
     private var statusText: String {

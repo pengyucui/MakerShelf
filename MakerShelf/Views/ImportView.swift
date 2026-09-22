@@ -30,7 +30,7 @@ struct ImportView: View {
                 .background(ShelfTheme.ink.opacity(0.07), in: Circle())
                 .keyboardShortcut(.cancelAction)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("NEW COLLECTION ITEM").font(.system(size: 8, weight: .semibold)).tracking(1.3).foregroundStyle(ShelfTheme.green)
+                    Text("添加到模型库").font(.system(size: 11, weight: .medium)).foregroundStyle(ShelfTheme.muted)
                     Text(headerTitle).font(.system(size: 20, weight: .semibold))
                 }
                 Spacer()
@@ -80,7 +80,7 @@ struct ImportView: View {
         }
         .padding(24)
         .frame(width: store.source == .local ? 940 : 760)
-        .background(.regularMaterial)
+        .background(ShelfTheme.canvas)
         .foregroundStyle(ShelfTheme.ink)
         .onChange(of: store.source) { _, _ in
             store.input = ""
@@ -94,7 +94,7 @@ struct ImportView: View {
 
     private var headerTitle: String {
         if store.source == .local { return "添加模型" }
-        return store.preview == nil ? "导入模型" : "确认你的归档清单"
+        return store.preview == nil ? "添加模型" : "确认归档清单"
     }
 
     private var form: some View {
@@ -138,8 +138,7 @@ struct ImportView: View {
                 }
                 .padding(18)
                 .frame(maxWidth: .infinity, minHeight: 300, alignment: .topLeading)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(ShelfTheme.line))
+                .shelfSurface()
 
                 remoteArchivePanel.frame(width: 235)
             }
@@ -176,16 +175,15 @@ struct ImportView: View {
             archiveItem("text.alignleft", "原始介绍与作者")
             archiveItem("photo.on.rectangle", "封面与展示图片")
             Divider()
-            Text(store.canPreviewWithoutLogin ? "预览公开资料时不访问钥匙串。" : "只读取当前选择站点的登录会话。")
-                .font(.system(size: 9)).foregroundStyle(ShelfTheme.muted).lineSpacing(3)
+            Text(store.canPreviewWithoutLogin ? "先预览公开资料，下载时按需连接账号。" : "使用当前所选站点的登录账号。")
+                .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted).lineSpacing(3)
             Spacer()
             Label("加入队列后写入归档目录", systemImage: "externaldrive")
-                .font(.system(size: 9)).foregroundStyle(ShelfTheme.muted)
+                .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted)
         }
         .padding(16)
         .frame(minHeight: 300, alignment: .topLeading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(ShelfTheme.line))
+        .shelfSurface()
     }
 
     private func archiveItem(_ symbol: String, _ title: String) -> some View {
@@ -221,7 +219,7 @@ struct ImportView: View {
                 Spacer()
                 Button("全选") { store.selectedIDs = Set(preview.records.map(\.id)) }.buttonStyle(.plain)
                 Button("清空") { store.selectedIDs.removeAll() }.buttonStyle(.plain)
-            }.foregroundStyle(ShelfTheme.green)
+            }.foregroundStyle(ShelfTheme.ink)
             ScrollView {
                 LazyVStack(spacing: 12) {
                     ForEach(preview.records) { model in
@@ -235,10 +233,10 @@ struct ImportView: View {
                                 Text(model.title).font(.system(size: 13, weight: .medium))
                                 Text("\(model.author) · \(model.site.title)")
                                     .font(.system(size: 10)).foregroundStyle(ShelfTheme.muted)
-                                if model.isDownloaded { Text("本地已有归档，再次加入将覆盖更新").font(.system(size: 9)).foregroundStyle(ShelfTheme.muted) }
+                                if model.isDownloaded { Text("本地已有归档，再次加入将覆盖更新").font(.system(size: 11)).foregroundStyle(ShelfTheme.muted) }
                             }
                             Spacer()
-                        }.padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        }.padding(10).background(ShelfTheme.card, in: RoundedRectangle(cornerRadius: 10))
                     }
                     if preview.hasMore {
                         Button(store.loadingMore ? "正在加载…" : "加载更多（\(preview.records.count)/\(preview.total)）") {

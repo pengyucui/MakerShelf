@@ -96,12 +96,22 @@ struct ModelRecord: Identifiable, Codable, Hashable, Sendable {
     /// 已写入归档目录的模型都可以在本地编辑资料、文件和展示图片。
     var canEditLocally: Bool { isDownloaded && !isDemo && archiveFolder != nil }
     var sourceLabel: String { isLocal ? "本地模型" : site.title }
+    /// 使用真实文件种类，避免将 STL、本地文件或尚未解析的模型一律标成 3MF。
+    var fileFormatLabel: String {
+        let kinds = Set(files.map { $0.kind.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+            .filter { !$0.isEmpty })
+        if kinds.count == 1 { return kinds.first ?? "模型文件" }
+        return kinds.isEmpty ? "模型文件" : "多种格式"
+    }
     var sourceHeading: String { isLocal ? "LOCAL MODEL" : "MAKERWORLD \(site.title)" }
     var plainSummary: String { Self.stripHTML(summary, collapseWhitespace: true) }
 
     var introductionHTML: String {
-        if summary.contains("<img") { return summary }
-        return descriptionHTML ?? summary
+        // 已归档介绍中的图片地址已改写为本地路径，优先使用它才能离线阅读插图。
+        if let descriptionHTML, !descriptionHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return descriptionHTML
+        }
+        return summary
     }
 
     init(id: String, title: String, subtitle: String, author: String, imageName: String, category: String,
@@ -225,7 +235,12 @@ enum IntroBlock {
 }
 
 enum DescriptionBlocks {
-    static func parse(_ html: String, archiveRoot: URL?, archiveFolder: String?, localImages: [String]) -> [IntroBlock] {
+    static func parse(_ source: String, archiveRoot: URL?, archiveFolder: String?, localImages: [String]) -> [IntroBlock] {
+        // 归档 HTML 含有标题和样式包装；原生阅读只保留可见内容，不把 CSS 或脚本当作介绍文字。
+        let html = source
+            .replacingOccurrences(of: #"(?is)<(head|style|script|title)\b[^>]*>.*?</\1\s*>"#,
+                                  with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(?s)<!--.*?-->"#, with: "", options: .regularExpression)
         guard !html.isEmpty else { return [] }
         guard let regex = try? NSRegularExpression(pattern: #"(?is)<img\b[^>]*>"#) else {
             let text = ModelRecord.stripHTML(html, collapseWhitespace: false)
@@ -290,7 +305,8 @@ enum DescriptionBlocks {
                 }
             }
         }
-        if src.lowercased().hasPrefix("http"), let url = PathSafety.remoteURL(src) {
+        if let url = PathSafety.remoteURL(src),
+           let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) {
             return .remote(url)
         }
         return nil

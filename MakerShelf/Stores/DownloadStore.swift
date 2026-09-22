@@ -21,6 +21,8 @@ final class DownloadJob: Identifiable {
 @MainActor @Observable
 final class DownloadStore {
     private(set) var jobs: [DownloadJob] = []
+    /// 供模型卡片常数时间定位任务；进度保留在 job 内，避免每个字节回调更新整个索引。
+    private(set) var latestJobsByModel: [String: DownloadJob] = [:]
     private(set) var pendingCount = 0
     private(set) var completedCount = 0
     private(set) var totalMB = 0.0
@@ -46,6 +48,7 @@ final class DownloadStore {
     @discardableResult
     func enqueue(_ models: [ModelRecord]) -> Int {
         var addedJobs: [DownloadJob] = []
+        var latestIndex = latestJobsByModel
         var addedMB = 0.0
         for model in models {
             // 稳定来源 ID 去重；同一模型的未完成任务不能重复占用队列。
@@ -55,10 +58,12 @@ final class DownloadStore {
             jobsByID[job.id] = job
             waitingIDs.append(job.id)
             addedJobs.append(job)
+            latestIndex[model.id] = job
             addedMB += model.sizeMB
         }
         // 批量发布一次集合变更，避免逐项触发模型列表的观察通知。
         jobs.append(contentsOf: addedJobs)
+        if !addedJobs.isEmpty { latestJobsByModel = latestIndex }
         totalMB += addedMB
         updateCounts()
         schedule()
@@ -85,6 +90,7 @@ final class DownloadStore {
         guard reservedModels[job.model.id] == nil || reservedModels[job.model.id] == job.id else { return }
         if job.phase == .failed { failedCount -= 1 }
         reservedModels[job.model.id] = job.id
+        latestJobsByModel[job.model.id] = job
         waitingIDs.append(job.id)
         job.errorMessage = nil
         job.phase = .queued

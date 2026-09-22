@@ -85,9 +85,11 @@ actor ImagePipeline {
         try await thumbnail(ArtworkSource.bundled(name), pixels: pixels)
     }
 
-    func thumbnail(_ source: ArtworkSource, pixels: Int) async throws -> Thumbnail {
-        let bucket = [160, 640, 1_280].first(where: { $0 >= pixels }) ?? 1_280
-        let key = cacheKey(source, bucket: bucket)
+    func thumbnail(_ source: ArtworkSource, pixels: Int, revision: String = "") async throws -> Thumbnail {
+        // 展示图缩略条使用 320 档，避免约 80 点的小图占用 640 像素解码内存。
+        let bucket = [160, 320, 640, 1_280].first(where: { $0 >= pixels }) ?? 1_280
+        // 同一路径替换图片后按归档版本隔离缓存及在途请求，旧解码结果不会覆盖新版封面。
+        let key = "\(cacheKey(source, bucket: bucket)):revision:\(revision)"
         if let cached = cache.object(forKey: key as NSString) { return cached }
         if let pending = inFlight[key] { return try await pending.value }
         let decoder = decoder

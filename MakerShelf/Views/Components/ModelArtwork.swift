@@ -18,6 +18,7 @@ struct ModelArtwork: View {
     private let revision: String
     @State private var thumbnail: Thumbnail?
     @State private var failed = false
+    @State private var visible = false
 
     init(name: String, pixels: Int) {
         self.source = .bundled(name)
@@ -25,10 +26,10 @@ struct ModelArtwork: View {
         self.revision = ""
     }
 
-    init(source: ArtworkSource, pixels: Int) {
+    init(source: ArtworkSource, pixels: Int, revision: String = "") {
         self.source = source
         self.pixels = pixels
-        self.revision = ""
+        self.revision = revision
     }
 
     init(model: ModelRecord, pixels: Int, archiveRoot: URL? = nil) {
@@ -38,112 +39,149 @@ struct ModelArtwork: View {
     }
 
     var body: some View {
-        ZStack {
-            if let thumbnail {
-                Image(decorative: thumbnail.image, scale: 1)
-                    .resizable().interpolation(.medium).scaledToFit()
-            } else {
-                Image(systemName: failed ? "photo.badge.exclamationmark" : "cube.transparent")
-                    .font(.system(size: 27, weight: .light)).foregroundStyle(ShelfTheme.muted.opacity(0.45))
+        // 图片只在父容器提供的区域内绘制，不把原图固有尺寸传回网格布局。
+        GeometryReader { geometry in
+            ZStack {
+                if let thumbnail {
+                    Image(decorative: thumbnail.image, scale: 1)
+                        .resizable().interpolation(.medium).scaledToFit()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                } else {
+                    Image(systemName: failed ? "photo.badge.exclamationmark" : "cube.transparent")
+                        .font(.system(size: 27, weight: .light))
+                        .foregroundStyle(ShelfTheme.muted.opacity(0.45))
+                }
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
         }
         .accessibilityHidden(true)
-        .task(id: "\(source):\(pixels):\(revision)") {
+        .onAppear { visible = true }
+        .onDisappear { visible = false; thumbnail = nil }
+        .task(id: "\(source):\(pixels):\(revision):\(visible)") {
+            guard visible else { return }
             failed = false
             thumbnail = nil
             do {
-                let result = try await ImagePipeline.shared.thumbnail(source, pixels: pixels)
+                let result = try await ImagePipeline.shared.thumbnail(source, pixels: pixels, revision: revision)
                 try Task.checkCancellation()
+                guard visible else { return }
                 thumbnail = result
             } catch is CancellationError {
-            } catch { failed = true }
+            } catch {
+                guard !Task.isCancelled else { return }
+                failed = true
+            }
         }
-        .onDisappear { thumbnail = nil }
+        // 离屏时释放视图持有的缩略图；重新出现会因 visible 变化重启加载，优先命中共享缓存。
     }
 }
 
+/// 固定比例封面与固定信息区独立排版，标题长短和异步图片加载不会改变卡片高度。
 @MainActor
 struct ModelCard: View {
     let model: ModelRecord
     let isSelected: Bool
+    let job: DownloadJob?
     let onEdit: (() -> Void)?
     let open: () -> Void
     @Environment(\.archiveRoot) private var archiveRoot
     @State private var hovered = false
 
-    init(model: ModelRecord, isSelected: Bool = false, onEdit: (() -> Void)? = nil, open: @escaping () -> Void) {
+    init(model: ModelRecord, isSelected: Bool = false, job: DownloadJob? = nil, onEdit: (() -> Void)? = nil, open: @escaping () -> Void) {
         self.model = model
         self.isSelected = isSelected
+        self.job = job
         self.onEdit = onEdit
         self.open = open
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ZStack(alignment: .topTrailing) {
-                ModelArtwork(model: model, pixels: 640, archiveRoot: archiveRoot)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(10)
-                    .frame(height: 132)
-                    .background(Color(hex: model.backgroundHex))
-                    .clipped()
-                Text(model.isLocal ? "LOCAL" : "3MF")
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 5))
-                    .padding(9)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                Text(model.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                Text(model.author).font(.system(size: 9)).foregroundStyle(ShelfTheme.muted).lineLimit(1)
-                HStack(spacing: 8) {
-                    HStack(spacing: 5) {
-                        Circle().fill(model.isLocal ? .orange.opacity(0.8) : (model.site == .china ? ShelfTheme.green : .blue.opacity(0.7)))
-                            .frame(width: 5, height: 5)
-                        Text(model.sourceLabel).font(.system(size: 8)).foregroundStyle(ShelfTheme.muted)
+            Button(action: open) {
+                VStack(alignment: .leading, spacing: 0) {
+                    // 用底板确定 4:3 几何尺寸，再覆盖图片，禁止原图挤占文字区域。
+                    Color(hex: model.backgroundHex)
+                        .aspectRatio(4.0 / 3.0, contentMode: .fit)
+                        .overlay {
+                            ModelArtwork(model: model, pixels: 640, archiveRoot: archiveRoot)
+                                .padding(5)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(model.title).font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(ShelfTheme.ink)
+                        Text(model.author).font(.system(size: 12))
+                        Text("\(model.sourceLabel) · \(model.fileFormatLabel)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ShelfTheme.muted)
                     }
-                    Spacer(minLength: 3)
-                    Text(model.isDownloaded ? "已归档" : "未下载")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(model.isDownloaded ? ShelfTheme.green : ShelfTheme.muted)
-                    if onEdit != nil {
-                        Text("编辑")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(ShelfTheme.green)
-                            .padding(.horizontal, 4)
-                            .contentShape(Rectangle())
-                            .highPriorityGesture(TapGesture().onEnded { onEdit?() })
-                    }
+                    .foregroundStyle(ShelfTheme.muted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 78, alignment: .center)
+                    .padding(.horizontal, 10)
                 }
-                .padding(.top, 8)
-                .overlay(alignment: .top) { Rectangle().fill(ShelfTheme.line).frame(height: 1) }
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 11)
-            .padding(.bottom, 10)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(model.title)，\(model.author)，\(model.sourceLabel)")
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+
+            HStack {
+                ModelLibraryStatus(model: model, job: job)
+                Spacer(minLength: 0)
+                Menu {
+                    Button("查看详情", systemImage: "sidebar.right", action: open)
+                    if let onEdit {
+                        Button("编辑模型", systemImage: "pencil", action: onEdit)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 13))
+                        .frame(width: 24, height: 24)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("\(model.title)的更多操作")
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
         }
-        .frame(height: 214, alignment: .top)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(6)
+        .shelfSurface()
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(isSelected ? ShelfTheme.green.opacity(0.55) : (hovered ? ShelfTheme.green.opacity(0.24) : ShelfTheme.line),
-                              lineWidth: isSelected ? 2 : 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(isSelected ? ShelfTheme.accent : (hovered ? ShelfTheme.muted.opacity(0.45) : .clear),
+                              lineWidth: isSelected ? 1.5 : 1)
         }
-        .shadow(color: ShelfTheme.ink.opacity(hovered || isSelected ? 0.10 : 0.06), radius: hovered || isSelected ? 12 : 6, y: 5)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onTapGesture(perform: open)
         .contextMenu {
+            Button("查看详情", systemImage: "sidebar.right", action: open)
             if let onEdit {
-                Button("编辑本地模型", systemImage: "pencil", action: onEdit)
+                Button("编辑模型", systemImage: "pencil", action: onEdit)
             }
         }
         .onHover { hovered = $0 }
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("\(model.title)，\(model.author)，\(model.sourceLabel)，\(model.isDownloaded ? "已归档" : "未下载")")
-        .accessibilityAction(named: "查看") { open() }
-        .accessibilityAction(named: "编辑本地模型") { onEdit?() }
+    }
+}
+
+/// 卡片只观察任务阶段，百分比更新不会导致封面与文字重新布局。
+@MainActor
+struct ModelLibraryStatus: View {
+    let model: ModelRecord
+    let job: DownloadJob?
+
+    var body: some View {
+        if let job, job.phase != .completed && job.phase != .cancelled {
+            HStack(spacing: 7) {
+                Circle().fill(job.phase.statusColor).frame(width: 7, height: 7)
+                Text(job.phase.rawValue)
+            }
+            .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted)
+        } else {
+            StatusLabel(downloaded: model.isDownloaded, demo: model.isDemo)
+        }
     }
 }

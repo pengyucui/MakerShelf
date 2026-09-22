@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: 检出源码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: 校验版本
         shell: bash
@@ -72,7 +72,7 @@ jobs:
           shasum -a 256 "${package}" > "${package}.sha256"
 
       - name: 保存 Action 构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: MakerShelf-${{ github.ref_name }}-unsigned-macOS
           path: |

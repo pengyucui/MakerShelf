@@ -6,14 +6,16 @@ import UniformTypeIdentifiers
 struct LocalModelEditView: View {
     let model: ModelRecord
     @Bindable var preferences: PreferencesStore
+    let categories: [String]
     let onSave: @MainActor (ModelRecord, LocalModelDraft) async throws -> Void
     @State private var store: LocalModelStore
     @Environment(\.dismiss) private var dismiss
 
-    init(model: ModelRecord, preferences: PreferencesStore,
+    init(model: ModelRecord, preferences: PreferencesStore, categories: [String] = [],
          onSave: @escaping @MainActor (ModelRecord, LocalModelDraft) async throws -> Void) {
         self.model = model
         self.preferences = preferences
+        self.categories = categories
         self.onSave = onSave
         _store = State(initialValue: LocalModelStore(existing: model, archiveRoot: preferences.archiveURL))
     }
@@ -55,6 +57,7 @@ struct LocalModelEditView: View {
             LocalModelCreationView(store: store,
                                    preferences: preferences,
                                    existing: model,
+                                   categories: categories,
                                    showsIntro: false,
                                    showsFooterActions: false,
                                    onSave: { draft in try await onSave(model, draft) })
@@ -67,12 +70,13 @@ struct LocalModelEditView: View {
     }
 }
 
-/// Appica V2 本地模型编辑器。新建与编辑共用同一套表单，文件操作仍交给后台服务。
+/// 本地模型编辑器。新建与编辑共用同一套表单，文件操作仍交给后台服务。
 @MainActor
 struct LocalModelCreationView: View {
     @Bindable var store: LocalModelStore
     @Bindable var preferences: PreferencesStore
     let existing: ModelRecord?
+    var categories: [String] = []
     var showsIntro: Bool = true
     var showsFooterActions: Bool = true
     let onSave: @MainActor (LocalModelDraft) async throws -> Void
@@ -105,6 +109,17 @@ struct LocalModelCreationView: View {
                       allowsMultipleSelection: true) { result in
             receive(result, asImages: true)
         }
+        // 原生弹窗隔离键盘焦点与默认按钮，选择封面时不会误触父窗口的保存操作。
+        .disabled(store.isSaving)
+        .sheet(isPresented: $store.showsCoverPrompt, onDismiss: store.dismissCoverSuggestions) {
+            CoverSuggestionDialog(query: $store.coverSuggestionQuery,
+                                  items: store.visibleCoverSuggestions,
+                                  selectedID: store.selectedCoverSuggestionID,
+                                  choose: { store.selectedCoverSuggestionID = $0 },
+                                  accept: store.acceptCoverSuggestion,
+                                  dismiss: { store.showsCoverPrompt = false })
+        }
+        .onDisappear { store.dismissCoverSuggestions() }
     }
 
     private var formPanel: some View {
@@ -148,10 +163,10 @@ struct LocalModelCreationView: View {
                                 .textFieldStyle(.roundedBorder)
                         }
                         field("分类") {
-                            TextField("其他", text: $store.category)
-                                .textFieldStyle(.roundedBorder)
+                            CategoryField(category: $store.category, existing: categories)
                         }
-                        .frame(width: 150)
+                        .frame(width: 180)
+                        .zIndex(2)
                     }
                 }
 
@@ -208,7 +223,7 @@ struct LocalModelCreationView: View {
                         Image(systemName: isDropTargeted ? "arrow.down.doc.fill" : "cube.transparent")
                             .font(.system(size: 25, weight: .light))
                             .foregroundStyle(isDropTargeted ? ShelfTheme.onAccent : ShelfTheme.ink)
-                        Text(isDropTargeted ? "松开以添加模型" : "拖入 3MF、STL 或 STEP 文件")
+                        Text(isDropTargeted ? "松开以添加模型" : "拖入 3MF、STL、OBJ 或 STEP 文件")
                             .font(.system(size: 12, weight: .medium))
                         Text("也可点按这里使用系统文件选择器 · 支持多选")
                             .font(.system(size: 10))
@@ -476,5 +491,213 @@ struct LocalModelCreationView: View {
         case .failure(let error):
             store.reportSelectionError(error)
         }
+    }
+
+}
+
+/// 分类既可以点选模型库里已有的名称，也可以直接输入一个新名称。
+@MainActor
+private struct CategoryField: View {
+    @Binding var category: String
+    let existing: [String]
+    @FocusState private var focused: Bool
+    @State private var showsSuggestions = false
+
+    private var trimmed: String {
+        category.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var choices: [String] {
+        existing
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "全部" }
+            .reduce(into: [String]()) { list, name in
+                if !list.contains(where: { $0.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }) {
+                    list.append(name)
+                }
+            }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    private var matches: [String] {
+        guard !trimmed.isEmpty else { return choices }
+        return choices.filter { $0.localizedStandardContains(trimmed) }
+    }
+
+    private var canCreate: Bool {
+        guard !trimmed.isEmpty else { return false }
+        return !choices.contains {
+            $0.compare(trimmed, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+    }
+
+    var body: some View {
+        TextField("选择或输入新分类", text: $category)
+            .textFieldStyle(.roundedBorder)
+            .focused($focused)
+            .onChange(of: focused) { _, isFocused in
+                if isFocused { showsSuggestions = true }
+            }
+            .onChange(of: category) { _, _ in
+                if focused { showsSuggestions = true }
+            }
+            .popover(isPresented: $showsSuggestions, arrowEdge: .bottom) {
+                suggestionList
+                    .frame(width: 220)
+            }
+    }
+
+    private var suggestionList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                if canCreate {
+                    suggestionButton("新增「\(trimmed)」", systemImage: "plus") {
+                        category = trimmed
+                        showsSuggestions = false
+                        focused = false
+                    }
+                }
+                if matches.isEmpty && !canCreate {
+                    Text(choices.isEmpty ? "还没有分类，输入名称即可新增。" : "没有匹配的分类")
+                        .font(.system(size: 12))
+                        .foregroundStyle(ShelfTheme.muted)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 10)
+                }
+                ForEach(matches, id: \.self) { name in
+                    suggestionButton(name, systemImage: namesMatch(category, name) ? "checkmark" : "tag") {
+                        category = name
+                        showsSuggestions = false
+                        focused = false
+                    }
+                }
+            }
+            .padding(4)
+        }
+        .frame(maxHeight: 240)
+        .padding(8)
+    }
+
+    private func namesMatch(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.trimmingCharacters(in: .whitespacesAndNewlines)
+            .compare(rhs, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+    }
+
+    private func suggestionButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 13))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// 搜索候选样式：描边输入框、圆角建议列表、选中项浅底和勾选。
+@MainActor
+private struct CoverSuggestionDialog: View {
+    @Binding var query: String
+    let items: [CoverSuggestion]
+    let selectedID: String?
+    let choose: (String) -> Void
+    let accept: () -> Void
+    let dismiss: () -> Void
+    @FocusState private var searchFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("使用模型预览作为封面？")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("选用 3MF 包内图片或 STL / OBJ 几何预览，也可以稍后添加自己的图片。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(ShelfTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(ShelfTheme.muted)
+                TextField("搜索文件", text: $query)
+                    .textFieldStyle(.plain)
+                    .focused($searchFocused)
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(ShelfTheme.muted)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .font(.system(size: 13))
+            .padding(.horizontal, 10)
+            .frame(height: 36)
+            .background(ShelfTheme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ShelfTheme.line))
+
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    if items.isEmpty {
+                        Text("没有匹配的文件")
+                            .font(.system(size: 12))
+                            .foregroundStyle(ShelfTheme.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 10)
+                    } else {
+                        ForEach(items) { item in
+                            Button { choose(item.id) } label: {
+                                HStack(spacing: 10) {
+                                    ModelArtwork(source: .file(item.imageURL), pixels: 160)
+                                        .frame(width: 40, height: 40)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.fileName)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        Text(item.plateCount > 1 ? "\(item.plateCount) 个打印盘" : item.previewLabel)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(ShelfTheme.muted)
+                                    }
+                                    Spacer(minLength: 0)
+                                    if selectedID == item.id {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundStyle(ShelfTheme.ink)
+                                    }
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(selectedID == item.id ? ShelfTheme.selection : Color.clear,
+                                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .frame(height: min(280, CGFloat(max(items.count, 1)) * 56))
+            .padding(4)
+            .background(ShelfTheme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ShelfTheme.line))
+
+            HStack(spacing: 8) {
+                Spacer()
+                Button("不使用", action: dismiss).buttonStyle(QuietButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                Button("用作封面", action: accept)
+                    .buttonStyle(PrimaryButtonStyle())
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!items.contains { $0.id == selectedID })
+            }
+        }
+        .padding(16)
+        .frame(width: 440)
+        .background(ShelfTheme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(ShelfTheme.line))
+        .onAppear { searchFocused = true }
     }
 }

@@ -202,8 +202,7 @@ struct ModelRecord: Identifiable, Codable, Hashable, Sendable {
 
     private static func preferredStill(in paths: [String]) -> String? {
         paths.first { path in
-            let lower = path.lowercased()
-            return !lower.contains(".gif") && !lower.contains(".webp")
+            !path.lowercased().contains(".gif")
         }
     }
 
@@ -462,6 +461,11 @@ enum ShelfError: LocalizedError {
     case rateLimited
     case loginFailed(String)
     case needsVerification
+
+    var isSessionExpired: Bool {
+        if case .sessionExpired = self { return true }
+        return false
+    }
 
     var errorDescription: String? {
         switch self {

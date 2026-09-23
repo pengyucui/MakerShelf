@@ -156,16 +156,9 @@ struct LibraryInspectorView: View {
                 } else {
                     // 完整保留文件列表；惰性创建行，避免将十个以后的文件隐藏。
                     ForEach(model.files) { file in
-                        HStack(spacing: 9) {
-                            Image(systemName: "doc").foregroundStyle(ShelfTheme.muted)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(file.name).font(.system(size: 11)).lineLimit(2).truncationMode(.middle)
-                                Text(file.kind.uppercased()).font(.system(size: 10)).foregroundStyle(ShelfTheme.muted)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .padding(11)
-                        .background(ShelfTheme.recessed, in: RoundedRectangle(cornerRadius: 10))
+                        ModelFileRow(file: file, archiveRoot: archiveRoot, revision: revision)
+                            // 编辑替换文件或归档版本变化时销毁旧行状态，避免短暂展示旧预览。
+                            .id("\(file.id):\(file.relativePath ?? file.name):\(file.kind):\(revision)")
                     }
                 }
             }
@@ -279,5 +272,120 @@ struct LibraryInspectorView: View {
         }
         .padding(10).frame(maxWidth: .infinity, alignment: .leading)
         .background(ShelfTheme.recessed, in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// 文件预览只属于当前文件；模型封面可能来自另一份网格，不能用于文件行兜底。
+@MainActor
+private struct ModelFileRow: View {
+    let file: ModelFile
+    let archiveRoot: URL?
+    let revision: String
+    @State private var preview: ModelFileThumb?
+    @State private var lookedUp = false
+    @State private var showingPreview = false
+    @State private var previewAttempt = 0
+
+    private var fileType: String {
+        // 与预览服务一致，以实际路径扩展名为准；历史 kind 字段仅在没有扩展名时兜底。
+        let suffix = ((file.relativePath ?? file.name) as NSString).pathExtension.lowercased()
+        return suffix.isEmpty ? file.kind.lowercased() : suffix
+    }
+    private var is3MF: Bool { fileType == "3mf" }
+    private var isSTL: Bool { fileType == "stl" }
+    private var isOBJ: Bool { fileType == "obj" }
+    private var isSTEP: Bool { ["step", "stp"].contains(fileType) }
+    private var supportsPreview: Bool { is3MF || isSTL || isOBJ }
+
+    private var fileURL: URL? { file.relativePath.flatMap { PathSafety.resolve($0, archiveRoot: archiveRoot) } }
+    private var requestID: String { "\(fileURL?.path ?? file.id):\(fileType):\(revision):\(previewAttempt)" }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button { showingPreview = true } label: {
+                thumbnail.frame(width: 56, height: 56)
+                    .background(ShelfTheme.card).clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain).disabled(preview == nil)
+            .help("放大静态预览").accessibilityLabel("预览 \(file.name)")
+            VStack(alignment: .leading, spacing: 5) {
+                Text(file.name).font(.system(size: 11)).lineLimit(2).truncationMode(.middle)
+                HStack(spacing: 6) {
+                    Text(fileType.uppercased())
+                    if file.sizeBytes > 0 {
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(file.sizeBytes), countStyle: .file))
+                    }
+                    if let preview, preview.plateCount > 1 {
+                        Text("\(preview.plateCount) 盘")
+                    } else if preview != nil && (isSTL || isOBJ) {
+                        Text("几何预览")
+                    }
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(ShelfTheme.muted)
+                // 失败提示单独换行，避免挤压 320 点详情栏中的文件类型和大小。
+                if lookedUp && preview == nil {
+                    Text(fileURL == nil && supportsPreview ? "下载后读取预览"
+                         : (isSTEP ? "STEP 暂不支持预览"
+                            : ((isSTL || isOBJ) ? "预览失败，查看运行日志"
+                               : (is3MF ? "未能读取包内预览" : "此格式暂不支持预览"))))
+                        .font(.system(size: 10)).foregroundStyle(ShelfTheme.muted)
+                    if supportsPreview && fileURL != nil {
+                        Button("重试预览") { previewAttempt += 1 }
+                            .buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(ShelfTheme.accent)
+                    }
+                }
+                if isSTL && preview != nil && fileURL != nil {
+                    Button("按当前设置重新生成") { previewAttempt += 1 }
+                        .buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(ShelfTheme.accent)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(11)
+        .background(ShelfTheme.recessed, in: RoundedRectangle(cornerRadius: 10))
+        .sheet(isPresented: $showingPreview) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text(file.name).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                    Spacer()
+                    Button("关闭") { showingPreview = false }.buttonStyle(QuietButtonStyle()).keyboardShortcut(.cancelAction)
+                }
+                if let preview {
+                    ModelArtwork(source: .file(preview.imageURL), pixels: 800, revision: "\(revision):\(previewAttempt)")
+                        .frame(width: 600, height: 450)
+                        .background(ShelfTheme.card, in: RoundedRectangle(cornerRadius: 12))
+                }
+                Text(is3MF ? "3MF 包内预览" : "\(isOBJ ? "OBJ" : "STL") 几何静态预览")
+                    .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted)
+            }.padding(20).background(ShelfTheme.canvas)
+        }
+        .task(id: requestID) {
+            showingPreview = false
+            preview = nil
+            lookedUp = false
+            guard supportsPreview, let url = fileURL else {
+                lookedUp = true
+                return
+            }
+            let result = await ModelFilePreviewStore.shared.thumbnail(for: url, revision: revision, retry: previewAttempt > 0)
+            guard !Task.isCancelled else { return }
+            preview = result
+            lookedUp = true
+        }
+    }
+
+    @ViewBuilder private var thumbnail: some View {
+        if supportsPreview, let preview {
+            ModelArtwork(source: .file(preview.imageURL), pixels: 160, revision: "\(revision):\(previewAttempt)")
+        } else {
+            VStack(spacing: 4) {
+                Image(systemName: supportsPreview ? "cube.transparent" : "doc")
+                    .font(.system(size: 18))
+                Text(fileType.uppercased()).font(.system(size: 8, weight: .medium)).lineLimit(1)
+            }
+            .foregroundStyle(ShelfTheme.muted)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 }

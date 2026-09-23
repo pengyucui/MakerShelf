@@ -25,12 +25,14 @@ struct ContentView: View {
                                       onSettings: { app.settingsTab = .storage; app.section = .settings })
                     case .settings:
                         SettingsView(preferences: app.preferences, sessions: app.sessions, tab: $app.settingsTab)
+                    case .logs:
+                        LogsView()
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 // 摘要自行观察队列与当前任务，根视图不读取任何 progress 属性。
-                if app.section != .downloads {
+                if app.section != .downloads && app.section != .logs {
                     DownloadActivityBar(store: app.downloads) { app.section = .downloads }
                 }
             }
@@ -42,12 +44,19 @@ struct ContentView: View {
         .frame(minWidth: 1_080, minHeight: 720)
         .environment(\.archiveRoot, app.preferences.archiveURL)
         .sheet(item: $app.sheet) { sheet in
+            Group {
             switch sheet {
             case .importModels:
                 ImportView(provider: app.provider, preferences: app.preferences, sessions: app.sessions,
+                           categories: app.library.categories,
                            onEnqueue: app.enqueue, onCreateLocal: app.createLocalModel)
             case .editLocal(let model):
-                LocalModelEditView(model: model, preferences: app.preferences, onSave: app.editLocalModel)
+                LocalModelEditView(model: model, preferences: app.preferences,
+                                   categories: app.library.categories, onSave: app.editLocalModel)
+            }
+            }
+            .task {
+                if !app.library.hasLoaded { await app.library.refresh(debounce: false) }
             }
         }
         .alert("MakerShelf", isPresented: Binding(get: { app.notice != nil }, set: { if !$0 { app.notice = nil } })) {

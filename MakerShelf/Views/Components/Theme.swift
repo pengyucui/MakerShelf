@@ -9,7 +9,7 @@ enum AppVersion {
     }
 }
 
-/// Appica V2 视觉语义。深墨色表达操作，绿色只表达成功状态；深色外观使用对应的语义色。
+/// 应用视觉语义。深墨色表达操作，绿色只表达成功状态；深色外观使用对应的语义色。
 enum ShelfTheme {
     static let canvas = adaptive("F5F7FA", dark: "151920")
     static let sidebar = adaptive("F0F3F8", dark: "1A202A")
@@ -169,7 +169,7 @@ struct EmptyShelf: View {
     }
 }
 
-/// 沿用既有面板调用入口，内部统一改用 Appica 实色卡片，避免表单内多层毛玻璃。
+/// 沿用既有面板调用入口，内部统一改用 实色卡片，避免表单内多层毛玻璃。
 @MainActor
 struct GlassPanel<Content: View>: View {
     let padding: CGFloat

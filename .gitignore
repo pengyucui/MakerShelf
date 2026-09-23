@@ -14,6 +14,27 @@ xcuserdata/
 *.xccheckout
 *.xcscmblueprint
 .swiftpm/
+**/.build/
 
 # 本地发布暂存目录
 .release/
+
+# 内部资料只保留本地，docs 仅公开两份文档
+/docs/*
+!/docs/发布流程.md
+!/docs/功能梳理.md
+/prototype/
+/index.html
+
+# 本机工具、环境与签名资料
+/.agents/
+/.codex/
+/AGENTS.md
+/CLAUDE.md
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.mobileprovision
+*.provisionprofile

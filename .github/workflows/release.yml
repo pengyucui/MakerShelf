@@ -32,7 +32,7 @@ jobs:
             echo "标签版本 ${tag_version} 与工程版本 ${project_version:-未找到} 不一致"
             exit 1
           fi
-          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          notes=".github/release-notes/${GITHUB_REF_NAME}.md"
           if [[ ! -f "${notes}" ]]; then
             echo "缺少 Release 说明：${notes}"
             exit 1
@@ -88,7 +88,7 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           package="MakerShelf-${version}-unsigned-macOS.zip"
-          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          notes=".github/release-notes/${GITHUB_REF_NAME}.md"
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" "${package}" "${package}.sha256" --clobber
             gh release edit "${GITHUB_REF_NAME}" --title "MakerShelf ${version}" --notes-file "${notes}"

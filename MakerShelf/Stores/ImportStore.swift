@@ -71,14 +71,20 @@ final class ImportStore {
         requiredSite = nil
         let request: ImportRequest
         do { request = try buildRequest() }
-        catch { errorMessage = error.localizedDescription; return }
+        catch {
+            errorMessage = error.localizedDescription
+            AppLog.write(.warning, .importing, "导入参数校验失败", detail: AppLog.errorDescription(error))
+            return
+        }
         if !canPreviewWithoutLogin && !connectedSites.contains(request.site) {
             requiredSite = request.site
             errorMessage = "请先连接\(request.site.title)。"
+            AppLog.write(.warning, .importing, "导入需要站点登录", detail: request.site.title)
             return
         }
         let token = generation
         loading = true
+        AppLog.write(.info, .importing, "开始读取导入清单", detail: "站点：\(request.site.title)；来源：\(source.rawValue)")
         requestTask = Task { [weak self, provider] in
             do {
                 let result = try await provider.preview(request, offset: 0, limit: 20)
@@ -87,12 +93,14 @@ final class ImportStore {
                 self.preview = result
                 self.selectedIDs = Set(result.records.map(\.id))
                 self.loading = false
+                AppLog.write(.info, .importing, "导入清单已获取", detail: "模型数：\(result.records.count)；还有下一页：\(result.hasMore)")
             } catch is CancellationError {
                 if let self, token == self.generation { self.loading = false }
             } catch {
                 guard let self, token == self.generation else { return }
                 self.loading = false
                 self.errorMessage = error.localizedDescription
+                AppLog.write(.error, .importing, "读取导入清单失败", detail: AppLog.errorDescription(error))
                 if let shelf = error as? ShelfError, case .notLoggedIn(let site) = shelf {
                     self.requiredSite = site
                 }
@@ -104,7 +112,11 @@ final class ImportStore {
         guard let preview, preview.hasMore, !loading, !loadingMore else { return }
         let request: ImportRequest
         do { request = try buildRequest() }
-        catch { errorMessage = error.localizedDescription; return }
+        catch {
+            errorMessage = error.localizedDescription
+            AppLog.write(.warning, .importing, "导入分页参数校验失败", detail: AppLog.errorDescription(error))
+            return
+        }
         let token = generation
         loadingMore = true
         requestTask = Task { [weak self, provider] in
@@ -118,12 +130,14 @@ final class ImportStore {
                 self.preview = ImportPreview(records: merged, notice: page.notice, total: page.total, hasMore: page.hasMore)
                 self.selectedIDs.formUnion(page.records.map(\.id))
                 self.loadingMore = false
+                AppLog.write(.info, .importing, "导入清单下一页已获取", detail: "本页：\(page.records.count)；累计：\(merged.count)")
             } catch is CancellationError {
                 if let self, token == self.generation { self.loadingMore = false }
             } catch {
                 guard let self, token == self.generation else { return }
                 self.loadingMore = false
                 self.errorMessage = error.localizedDescription
+                AppLog.write(.error, .importing, "读取导入清单下一页失败", detail: AppLog.errorDescription(error))
             }
         }
     }

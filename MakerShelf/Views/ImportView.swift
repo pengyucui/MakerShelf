@@ -6,16 +6,19 @@ struct ImportView: View {
     @State private var localStore = LocalModelStore()
     @Bindable var preferences: PreferencesStore
     let sessions: SessionStore
+    let categories: [String]
     let onEnqueue: ([ModelRecord]) -> Void
     let onCreateLocal: @MainActor (LocalModelDraft) async throws -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.archiveRoot) private var archiveRoot
     init(provider: any ModelSourceProviding, preferences: PreferencesStore, sessions: SessionStore,
+         categories: [String] = [],
          onEnqueue: @escaping ([ModelRecord]) -> Void,
          onCreateLocal: @escaping @MainActor (LocalModelDraft) async throws -> Void) {
         _store = State(initialValue: ImportStore(provider: provider))
         self.preferences = preferences
         self.sessions = sessions
+        self.categories = categories
         self.onEnqueue = onEnqueue
         self.onCreateLocal = onCreateLocal
     }
@@ -59,6 +62,7 @@ struct ImportView: View {
                 LocalModelCreationView(store: localStore,
                                        preferences: preferences,
                                        existing: nil,
+                                       categories: categories,
                                        showsIntro: false,
                                        showsFooterActions: false,
                                        onSave: onCreateLocal)

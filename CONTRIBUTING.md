@@ -7,7 +7,7 @@
 - macOS 14 或更新版本
 - Xcode 15 或更新版本
 - SwiftUI、Foundation、AppKit、Observation
-- 不依赖第三方 Swift Package
+- 内置本地 Swift Package：`ThirdParty/libwebp`，包含源码与许可，无需在线拉取
 
 用 Xcode 打开 `MakerShelf.xcodeproj`，选择共享 Scheme `MakerShelf` 和运行目标 `My Mac`。
 
@@ -16,7 +16,11 @@
 1. 从 `main` 创建短期功能分支，例如 `feature/import-author-models` 或 `fix/session-restore`。
 2. 一次提交只解决一个清晰问题，提交信息使用祈使句，例如 `修复作者主页站点识别`。
 3. 不要提交 `build/`、`dist/`、DerivedData、个人 Xcode 状态、登录 Cookie、令牌或本地模型归档。
-4. 修改用户可见行为时，同步更新 README、相关设计文档和 `CHANGELOG.md` 的“未发布”部分。
+4. 修改用户可见行为时，同步更新 README、`docs/功能梳理.md`和 `CHANGELOG.md` 的“未发布”部分。
+
+## 公开文件范围
+
+`docs/` 仅提交 `发布流程.md` 和 `功能梳理.md`。其他内部资料由 `.gitignore` 排除，不要强制加入。Release 说明维护在 `.github/release-notes/`，应用运行资源及第三方源码、许可继续随仓库分发。
 
 ## 代码约定
 

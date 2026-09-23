@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 actor MakerWorldClient {
     private let session: URLSession
@@ -56,22 +57,40 @@ actor MakerWorldClient {
     }
 
     func profile(site: MakerSite, session snapshot: SiteSession) async throws -> (uid: String, name: String, handle: String?, avatar: String?) {
-        let webPaths = ["design-user-service/my/preference", "design-user-service/my/profile"]
-        let cloudPaths = ["user-service/my/profile", "design-user-service/my/profile", "design-user-service/my/preference"]
+        // 只问网站自己的接口。云端接口不认网页令牌，回退过去会得到 401，被误报成登录过期。
+        let webPaths = ["design-user-service/my/preference", "design-user-service/my/profile", "user-service/my/profile"]
         var lastError: Error = ShelfError.sessionExpired(site)
         for path in webPaths {
             do {
-                let json = try await fetchJSON(site: site, path: path, session: snapshot, channel: .site)
-                if let parsed = Self.parseProfile(json) { return parsed }
-            } catch { lastError = error }
-        }
-        for path in cloudPaths {
-            do {
-                let json = try await fetchJSON(site: site, path: path, session: snapshot, channel: .cloud)
+                let json = try await fetchJSON(site: site, path: path, session: snapshot, channel: .site, fallbackToCloud: false)
                 if let parsed = Self.parseProfile(json) { return parsed }
             } catch { lastError = error }
         }
         throw lastError
+    }
+
+    /// 用该站点自己的 refreshToken 换新的访问令牌。不携带另一个站点的 Cookie。
+    func refresh(_ session: SiteSession) async throws -> SiteSession {
+        let refreshToken = session.refreshToken
+            ?? session.cookies.first {
+                session.site.belongs(cookieDomain: $0.domain) && $0.name.lowercased().contains("refresh")
+            }?.value
+        guard let refreshToken, !refreshToken.isEmpty else { throw ShelfError.sessionExpired(session.site) }
+        var carrier = session
+        carrier.token = refreshToken
+        let result = try await perform(site: session.site, path: "user-service/user/refreshtoken",
+                                       method: "POST", query: [:], body: ["refreshToken": refreshToken],
+                                       session: carrier, channel: .site)
+        guard let token = Self.findToken(in: result.json), Self.isUsableToken(token) else {
+            throw ShelfError.sessionExpired(session.site)
+        }
+        var next = session
+        next.token = token
+        if let rotated = Self.findString(result.json, keys: ["refreshToken", "refresh_token"]), !rotated.isEmpty {
+            next.refreshToken = rotated
+        }
+        next.updatedAt = Date()
+        return next
     }
 
     func design(site: MakerSite, id: Int, session snapshot: SiteSession?) async throws -> ModelRecord {
@@ -152,19 +171,22 @@ actor MakerWorldClient {
         for (index, raw) in imageURLs.enumerated() {
             try Task.checkCancellation()
             guard let url = PathSafety.remoteURL(raw) else { continue }
-            let ext = url.pathExtension.isEmpty ? "jpg" : String(url.pathExtension.prefix(4))
-            let dest = writer.imagesDirectory.appendingPathComponent(String(format: "%02d.\(ext)", index))
+            // 图片列表的顺序可能变化，文件名包含来源摘要，防止把上次同一序号的另一张图当作缓存。
+            let imageKey = SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined().prefix(16)
+            let webp = writer.imagesDirectory.appendingPathComponent(String(format: "%02d", index) + "-\(imageKey).webp")
             await progress(0.76 + imageShare * Double(index) / Double(max(imageURLs.count, 1)), "保存图片 \(index + 1)/\(imageURLs.count)")
             do {
-                if !FileManager.default.fileExists(atPath: dest.path) {
-                    try await downloadBinary(from: url, to: dest, session: nil, authorized: false, referer: record.site) { _ in }
-                }
-                localImages.append(writer.relative(dest))
-                replacements.append((raw, "images/\(dest.lastPathComponent)"))
+                let saved = try await saveDisplayImage(from: url, to: webp, referer: record.site)
+                localImages.append(writer.relative(saved))
+                replacements.append((raw, "images/\(saved.lastPathComponent)"))
             } catch {
+                try Task.checkCancellation()
+                AppLog.write(.warning, .image, "展示图归档失败",
+                             detail: "模型：\(record.id)；图片序号：\(index + 1)\n\(AppLog.errorDescription(error))")
                 warnings.append("图片 \(index + 1) 失败：\(error.localizedDescription)")
             }
         }
+        try Task.checkCancellation()
         let rewritten = writer.rewriteHTML(html, replacements: replacements)
         try rewritten.write(to: writer.descriptionURL, atomically: true, encoding: .utf8)
         detailed.files = savedFiles
@@ -257,10 +279,44 @@ actor MakerWorldClient {
                              total: total, hasMore: offset + records.count < total)
     }
 
+    /// 下载后用 libwebp 收成 WebP。编码失败时回退 JPEG；仍失败才保留原文件，成功转码的动图只留第一帧。
+    private func saveDisplayImage(from remote: URL, to webp: URL, referer: MakerSite) async throws -> URL {
+        try Task.checkCancellation()
+        let ext = remote.pathExtension.lowercased().filter { $0.isLetter || $0.isNumber }
+        let fallbackExt = ext.isEmpty ? "img" : String(ext.prefix(4))
+        let fallback = webp.deletingPathExtension().appendingPathExtension(fallbackExt)
+        // JPEG 和原格式回退同样可以复用，继续任务时不反复下载和编码已经完成的图片。
+        for candidate in [webp, webp.deletingPathExtension().appendingPathExtension("jpg"), fallback] {
+            if ((try? candidate.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 { return candidate }
+        }
+        // 暂停后立即恢复可能与旧压缩任务重叠，每次下载使用独立临时文件。
+        let temp = webp.deletingLastPathComponent().appendingPathComponent(".image-\(UUID().uuidString).download")
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try await downloadBinary(from: remote, to: temp, session: nil, authorized: false, referer: referer) { _ in }
+        do {
+            let encoded = try await DisplayImageEncoder.shared.compress(from: temp)
+            try Task.checkCancellation()
+            if encoded.fileExtension != "webp" { AppLog.write(.warning, .image, "WebP 编码回退到 JPEG") }
+            return try encoded.write(to: webp)
+        } catch {
+            // 取消不能被当作编码失败，否则旧任务仍会把原图写回正式归档。
+            try Task.checkCancellation()
+            AppLog.write(.warning, .image, "图片压缩失败，保留原文件", detail: AppLog.errorDescription(error))
+            let data = try Data(contentsOf: temp, options: .mappedIfSafe)
+            try data.write(to: fallback, options: .atomic)
+            return fallback
+        }
+    }
+
     private func downloadFile(item: Downloadable, site: MakerSite, session snapshot: SiteSession?,
                               destination: URL, progress: @escaping @Sendable (Double) async -> Void) async throws {
         if let url = item.directURL {
             try await downloadBinary(from: url, to: destination, session: snapshot, authorized: item.needsAuth, progress: progress)
+            return
+        }
+        if let designId = item.designId, let key = item.fileKey {
+            try await downloadListedModelFile(designId: designId, key: key, name: item.name, site: site,
+                                              session: snapshot, destination: destination, progress: progress)
             return
         }
         if let profileId = item.profileId, let modelId = item.modelId, let snapshot {
@@ -283,6 +339,82 @@ actor MakerWorldClient {
         throw ShelfError.downloadFailed("没有可用的下载地址：\(item.name)")
     }
 
+    /// 原始 STL、STEP 等文件在模型详情里经常只有编号，没有直链。向站点要一次下载地址或文件本体。
+    private func downloadListedModelFile(designId: Int, key: String, name: String, site: MakerSite,
+                                         session snapshot: SiteSession?, destination: URL,
+                                         progress: @escaping @Sendable (Double) async -> Void) async throws {
+        let queries: [[String: String]] = [
+            ["type": "download", "key": key],
+            ["type": "download", "unikey": key]
+        ]
+        let bases = [
+            "https://\(site.domain)/api/v1/design-service/design/\(designId)/model",
+            "https://\(site.apiHost)/v1/design-service/design/\(designId)/model"
+        ]
+        var lastError: Error = ShelfError.downloadFailed("没有可用的下载地址：\(name)")
+        for base in bases {
+            for query in queries {
+                do {
+                    try await fetchListedModelFile(base: base, query: query, site: site, session: snapshot,
+                                                   destination: destination, progress: progress)
+                    return
+                } catch let error as ShelfError where error.isSessionExpired {
+                    throw error
+                } catch {
+                    lastError = error
+                }
+            }
+        }
+        throw lastError
+    }
+
+    private func fetchListedModelFile(base: String, query: [String: String], site: MakerSite,
+                                      session snapshot: SiteSession?, destination: URL,
+                                      progress: @escaping @Sendable (Double) async -> Void) async throws {
+        var components = URLComponents(string: base)
+        components?.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
+        guard let url = components?.url else { throw ShelfError.downloadFailed("无法构造模型文件地址。") }
+        try await throttle()
+        var request = URLRequest(url: url)
+        request.setValue(snapshot?.userAgent ?? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
+        request.setValue("https://\(site.domain)/", forHTTPHeaderField: "Referer")
+        apply(snapshot, to: &request)
+        let (temp, response) = try await session.download(for: request)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        guard let http = response as? HTTPURLResponse else { throw ShelfError.downloadFailed("模型文件响应无效。") }
+        if http.statusCode == 401 { throw ShelfError.sessionExpired(site) }
+        guard (200..<300).contains(http.statusCode) else { throw ShelfError.http(http.statusCode, "模型文件下载失败") }
+        let header = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        let handle = try FileHandle(forReadingFrom: temp)
+        let prefix = try handle.read(upToCount: 1) ?? Data()
+        try handle.close()
+        if prefix.first == UInt8(ascii: "<") {
+            throw ShelfError.downloadFailed("站点返回了网页而不是模型文件。")
+        }
+        if header.contains("json") || prefix.first == UInt8(ascii: "{") || prefix.first == UInt8(ascii: "[") {
+            let data = try Data(contentsOf: temp)
+            let json = try JSONSerialization.jsonObject(with: data)
+            guard let raw = Self.findString(json, keys: ["url", "downloadUrl", "fileUrl", "modelUrl"]),
+                  let fileURL = Self.modelFileURL(raw) else {
+                throw ShelfError.downloadFailed("站点没有返回模型文件地址。")
+            }
+            try await downloadBinary(from: fileURL, to: destination, session: nil, authorized: false, referer: site, progress: progress)
+            return
+        }
+        try Task.checkCancellation()
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: temp, to: destination)
+        await progress(1)
+    }
+
+    private static func modelFileURL(_ raw: String?) -> URL? {
+        guard var raw, !raw.isEmpty else { return nil }
+        if raw.hasPrefix("//") { raw = "https:" + raw }
+        if let url = URL(string: raw), url.scheme == "https" || url.scheme == "http" { return url }
+        let path = raw.hasPrefix("/") ? String(raw.dropFirst()) : raw
+        return URL(string: "https://makerworld.bblmw.com/\(path)")
+    }
+
     private func downloadBinary(from url: URL, to destination: URL, session snapshot: SiteSession?,
                                 authorized: Bool, referer: MakerSite? = nil,
                                 progress: @escaping @Sendable (Double) async -> Void) async throws {
@@ -303,6 +435,7 @@ actor MakerWorldClient {
         guard (200..<300).contains(http.statusCode) else {
             throw ShelfError.http(http.statusCode, "下载失败")
         }
+        try Task.checkCancellation()
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: temp, to: destination)
         await progress(1)
@@ -311,12 +444,14 @@ actor MakerWorldClient {
     private enum Channel { case site, cloud }
 
     private func fetchJSON(site: MakerSite, path: String, session snapshot: SiteSession?,
-                      query: [String: String] = [:], channel: Channel = .site) async throws -> Any {
+                      query: [String: String] = [:], channel: Channel = .site,
+                      fallbackToCloud: Bool = true) async throws -> Any {
         do {
             return try await perform(site: site, path: path, method: "GET", query: query, body: nil,
                                      session: snapshot, channel: channel).json
         } catch {
-            if channel == .site {
+            // 网站返回 401 时不再改打云端：云端会用同一枚网页令牌再回一个 401，把真实原因盖掉。
+            if fallbackToCloud, channel == .site, (error as? ShelfError)?.isSessionExpired != true {
                 return try await perform(site: site, path: path, method: "GET", query: query, body: nil,
                                          session: snapshot, channel: .cloud).json
             }
@@ -397,12 +532,13 @@ actor MakerWorldClient {
 
     private func apply(_ snapshot: SiteSession?, to request: inout URLRequest) {
         guard let snapshot else { return }
+        let cookies = snapshot.cookies.filter { snapshot.site.belongs(cookieDomain: $0.domain) }
         if let token = snapshot.token, Self.isSessionToken(token) {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let header = snapshot.cookieHeader
+        let header = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
         if !header.isEmpty { request.setValue(header, forHTTPHeaderField: "Cookie") }
-        if let csrf = snapshot.cookies.first(where: { $0.name.lowercased() == "bbl_csrf_token" })?.value {
+        if let csrf = cookies.first(where: { $0.name.lowercased() == "bbl_csrf_token" })?.value {
             let value = csrf.split(separator: ".").first.map(String.init) ?? csrf
             request.setValue(value, forHTTPHeaderField: "x-csrf-token")
         }
@@ -522,6 +658,8 @@ private struct Downloadable {
     var instanceId: Int?
     var profileId: Int?
     var modelId: String?
+    var designId: Int?
+    var fileKey: String?
     var needsAuth: Bool
 }
 
@@ -718,7 +856,7 @@ extension MakerWorldClient {
     fileprivate static func downloadableFiles(from json: Any, record: ModelRecord, format: String) -> [Downloadable] {
         guard let dict = json as? [String: Any] else { return [] }
         let ext = dict["designExtension"] as? [String: Any]
-        let rawFiles = (ext?["model_files"] as? [[String: Any]]) ?? []
+        let rawFiles = Self.flattenModelFiles((ext?["model_files"] as? [[String: Any]]) ?? [])
         let instances = dict["instances"] as? [[String: Any]] ?? []
         let preferSTL = format.contains("STL")
         let prefer3MF = format.contains("3MF")
@@ -729,7 +867,8 @@ extension MakerWorldClient {
                 let title = string(instance, keys: ["title"]) ?? "print-profile"
                 items.append(Downloadable(id: "instance-\(instanceId)", name: "\(PathSafety.component(title)).3mf",
                                           kind: "3mf", sizeBytes: 0, directURL: nil, instanceId: instanceId,
-                                          profileId: int(instance, keys: ["profileId"]), modelId: record.modelId, needsAuth: true))
+                                          profileId: int(instance, keys: ["profileId"]), modelId: record.modelId,
+                                          designId: record.designId, fileKey: nil, needsAuth: true))
             }
         }
         for file in rawFiles {
@@ -737,20 +876,35 @@ extension MakerWorldClient {
             let kind = (string(file, keys: ["modelType"]) ?? URL(fileURLWithPath: name).pathExtension).lowercased()
             if prefer3MF && kind != "3mf" { continue }
             if preferSTL && !(kind == "stl" || kind == "zip") { continue }
-            let url = string(file, keys: ["modelUrl", "url"]).flatMap(URL.init(string:))
-            items.append(Downloadable(id: string(file, keys: ["unikey"]) ?? name, name: name, kind: kind.isEmpty ? "bin" : kind,
+            let url = modelFileURL(string(file, keys: ["modelUrl", "url", "downloadUrl", "fileUrl"]))
+            let key = string(file, keys: ["unikey", "key", "modelKey", "fileKey"])
+            items.append(Downloadable(id: key ?? name, name: name, kind: kind.isEmpty ? "bin" : kind,
                                       sizeBytes: int(file, keys: ["modelSize"]) ?? 0, directURL: url, instanceId: nil,
-                                      profileId: nil, modelId: record.modelId, needsAuth: url == nil))
+                                      profileId: nil, modelId: record.modelId, designId: record.designId,
+                                      fileKey: key, needsAuth: url == nil))
         }
         if preferSTL && items.isEmpty {
             for instance in instances {
                 guard let instanceId = int(instance, keys: ["id"]) else { continue }
                 items.append(Downloadable(id: "instance-\(instanceId)", name: "profile-\(instanceId).3mf", kind: "3mf",
                                           sizeBytes: 0, directURL: nil, instanceId: instanceId,
-                                          profileId: int(instance, keys: ["profileId"]), modelId: record.modelId, needsAuth: true))
+                                          profileId: int(instance, keys: ["profileId"]), modelId: record.modelId,
+                                          designId: record.designId, fileKey: nil, needsAuth: true))
             }
         }
         return items
+    }
+
+    private static func flattenModelFiles(_ files: [[String: Any]]) -> [[String: Any]] {
+        var result: [[String: Any]] = []
+        for file in files {
+            if let children = file["children"] as? [[String: Any]], !children.isEmpty {
+                result.append(contentsOf: flattenModelFiles(children))
+            } else {
+                result.append(file)
+            }
+        }
+        return result
     }
 
     static func int(_ json: Any?, keys: [String]) -> Int? {

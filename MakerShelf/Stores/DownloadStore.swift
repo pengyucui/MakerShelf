@@ -65,6 +65,7 @@ final class DownloadStore {
         jobs.append(contentsOf: addedJobs)
         if !addedJobs.isEmpty { latestJobsByModel = latestIndex }
         totalMB += addedMB
+        AppLog.write(.info, .download, "下载任务入队", detail: "新增：\(addedJobs.count)；跳过重复：\(models.count - addedJobs.count)")
         updateCounts()
         schedule()
         return addedJobs.count
@@ -78,6 +79,7 @@ final class DownloadStore {
 
     func pause(_ job: DownloadJob) {
         guard job.phase == .running || job.phase == .queued else { return }
+        AppLog.write(.info, .download, "暂停下载", detail: "模型：\(job.model.id)；任务：\(job.id)")
         job.phase = .paused
         stop(job)
         updateCounts()
@@ -90,6 +92,7 @@ final class DownloadStore {
         guard reservedModels[job.model.id] == nil || reservedModels[job.model.id] == job.id else { return }
         if job.phase == .failed { failedCount -= 1 }
         reservedModels[job.model.id] = job.id
+        AppLog.write(.info, .download, "继续或重试下载", detail: "模型：\(job.model.id)；任务：\(job.id)")
         latestJobsByModel[job.model.id] = job
         waitingIDs.append(job.id)
         job.errorMessage = nil
@@ -100,6 +103,7 @@ final class DownloadStore {
 
     func cancel(_ job: DownloadJob) {
         guard job.phase != .completed && job.phase != .cancelled else { return }
+        AppLog.write(.info, .download, "取消下载", detail: "模型：\(job.model.id)；任务：\(job.id)")
         if job.phase == .failed { failedCount -= 1 }
         releaseReservation(job)
         job.phase = .cancelled
@@ -109,6 +113,8 @@ final class DownloadStore {
     }
 
     func pauseAll() {
+        let count = jobs.filter { $0.phase == .running || $0.phase == .queued }.count
+        if count > 0 { AppLog.write(.info, .download, "暂停全部下载", detail: "任务数：\(count)") }
         // 先统一切状态再取消，避免单个任务暂停时启动下一个等待任务。
         for job in jobs where job.phase == .running || job.phase == .queued {
             job.phase = .paused
@@ -146,6 +152,7 @@ final class DownloadStore {
 
     private func start(_ job: DownloadJob) {
         job.phase = .running
+        AppLog.write(.info, .download, "开始下载", detail: "模型：\(job.model.id)；任务：\(job.id)")
         let token = UUID()
         let executor = executor
         let model = job.model
@@ -160,6 +167,9 @@ final class DownloadStore {
                 job.progress = 1
                 job.phase = result.warnings.isEmpty ? .completed : .partial
                 job.statusText = result.warnings.isEmpty ? "已完成" : result.warnings.joined(separator: "；")
+                AppLog.write(result.warnings.isEmpty ? .info : .warning, .download,
+                             result.warnings.isEmpty ? "下载归档完成" : "下载归档部分完成",
+                             detail: "模型：\(job.model.id)；任务：\(job.id)；警告数：\(result.warnings.count)")
                 self.completedCount += 1
                 self.releaseReservation(job)
                 self.running[job.id] = nil
@@ -179,6 +189,8 @@ final class DownloadStore {
                 self.failedCount += 1
                 self.releaseReservation(job)
                 job.errorMessage = error.localizedDescription
+                AppLog.write(.error, .download, "下载失败",
+                             detail: "模型：\(job.model.id)；任务：\(job.id)\n\(AppLog.errorDescription(error))")
                 self.running[job.id] = nil
                 self.updateCounts()
                 self.schedule()

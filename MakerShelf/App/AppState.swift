@@ -2,10 +2,10 @@ import Foundation
 import Observation
 
 enum AppSection: String, CaseIterable, Identifiable {
-    case library = "模型库", downloads = "下载任务", settings = "设置"
+    case library = "模型库", downloads = "下载任务", logs = "运行日志", settings = "设置"
     var id: String { rawValue }
     var symbol: String {
-        switch self { case .library: return "square.grid.2x2"; case .downloads: return "arrow.down.to.line"; case .settings: return "gearshape" }
+        switch self { case .library: return "square.grid.2x2"; case .downloads: return "arrow.down.to.line"; case .logs: return "text.alignleft"; case .settings: return "gearshape" }
     }
 }
 
@@ -41,6 +41,7 @@ final class AppState {
     private let localImporter = LocalModelImporter()
 
     init() {
+        AppLog.write(.info, .app, "应用启动", detail: "版本：\(AppVersion.label)；系统：\(ProcessInfo.processInfo.operatingSystemVersionString)")
         let catalog = ModelCatalog()
         let library = LibraryStore(catalog: catalog)
         let preferences = PreferencesStore()
@@ -102,6 +103,7 @@ final class AppState {
     private func enqueueReady(_ models: [ModelRecord]) {
         do { _ = try preferences.scopedArchiveURL() }
         catch {
+            AppLog.write(.error, .storage, "下载归档目录不可用", detail: AppLog.errorDescription(error))
             sheet = nil
             settingsTab = .storage
             section = .settings
@@ -139,5 +141,6 @@ final class AppState {
     func shutdown() {
         downloads.shutdown()
         preferences.stopAccess()
+        AppLog.shared.flush()
     }
 }

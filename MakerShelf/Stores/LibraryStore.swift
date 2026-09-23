@@ -49,6 +49,7 @@ final class LibraryStore {
         } catch {
             guard token == generation else { return }
             errorMessage = error.localizedDescription
+            AppLog.write(.error, .storage, "读取模型库失败", detail: AppLog.errorDescription(error))
         }
     }
 
@@ -65,7 +66,10 @@ final class LibraryStore {
             records.append(contentsOf: page.records)
         } catch is CancellationError {
         } catch {
-            if token == generation { errorMessage = error.localizedDescription }
+            if token == generation {
+                errorMessage = error.localizedDescription
+                AppLog.write(.error, .storage, "模型库分页失败", detail: AppLog.errorDescription(error))
+            }
         }
     }
 
@@ -73,6 +77,9 @@ final class LibraryStore {
         do {
             try await catalog.upsert(record)
             await refresh(debounce: false)
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLog.write(.error, .storage, "模型索引保存失败", detail: "模型：\(record.id)\n\(AppLog.errorDescription(error))")
+        }
     }
 }

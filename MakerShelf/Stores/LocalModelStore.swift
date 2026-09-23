@@ -1,6 +1,14 @@
 import Foundation
 import Observation
 
+struct CoverSuggestion: Identifiable, Sendable {
+    let id: String
+    let fileName: String
+    let plateCount: Int
+    let imageURL: URL
+    let previewLabel: String
+}
+
 @MainActor @Observable
 final class LocalModelStore {
     var title = ""
@@ -15,6 +23,13 @@ final class LocalModelStore {
     private(set) var isSaving = false
     var errorMessage: String?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    var showsCoverPrompt = false
+    var coverSuggestionQuery = ""
+    var selectedCoverSuggestionID: String?
+    private(set) var coverSuggestions: [CoverSuggestion] = []
+    @ObservationIgnored private var coverTask: Task<Void, Never>?
+    @ObservationIgnored private var coverGeneration = 0
+    @ObservationIgnored private var temporaryCovers: Set<URL> = []
 
     init() {}
 
@@ -52,12 +67,103 @@ final class LocalModelStore {
         errorMessage = "无法读取所选文件：\(error.localizedDescription)"
     }
 
-    func removeModelFile(_ url: URL) { modelFiles.removeAll { $0.standardizedFileURL == url.standardizedFileURL } }
-    func removeImage(_ url: URL) { imageFiles.removeAll { $0.standardizedFileURL == url.standardizedFileURL } }
+    func removeModelFile(_ url: URL) {
+        modelFiles.removeAll { $0.standardizedFileURL == url.standardizedFileURL }
+        coverSuggestions.removeAll { $0.id == url.standardizedFileURL.path }
+    }
+    func removeImage(_ url: URL) {
+        imageFiles.removeAll { $0.standardizedFileURL == url.standardizedFileURL }
+        cleanupTemporaryCovers()
+    }
 
     func setCover(_ url: URL) {
         guard let index = imageFiles.firstIndex(where: { $0.standardizedFileURL == url.standardizedFileURL }), index > 0 else { return }
         imageFiles.insert(imageFiles.remove(at: index), at: 0)
+    }
+
+    private func useAsCover(_ url: URL) {
+        imageFiles.removeAll { $0.standardizedFileURL == url.standardizedFileURL }
+        imageFiles.insert(url, at: 0)
+    }
+
+    var visibleCoverSuggestions: [CoverSuggestion] {
+        let query = coverSuggestionQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelIDs = Set(modelFiles.map { $0.standardizedFileURL.path })
+        return coverSuggestions.filter { item in
+            modelIDs.contains(item.id)
+                && (query.isEmpty || item.fileName.localizedStandardContains(query))
+        }
+    }
+
+    /// 只允许采用当前可见候选，防止搜索过滤后仍确认之前隐藏的选中项。
+    func acceptCoverSuggestion() {
+        guard !isSaving,
+              let selected = visibleCoverSuggestions.first(where: { $0.id == selectedCoverSuggestionID }) else { return }
+        useAsCover(selected.imageURL)
+        showsCoverPrompt = false
+    }
+
+    func dismissCoverSuggestions() {
+        coverGeneration += 1
+        coverTask?.cancel()
+        coverTask = nil
+        showsCoverPrompt = false
+        coverSuggestions = []
+        selectedCoverSuggestionID = nil
+        cleanupTemporaryCovers()
+    }
+
+    /// 保存前保留用户选择的临时封面；其余候选只归当前表单所有，不清理用户提供的文件。
+    private func cleanupTemporaryCovers(all: Bool = false) {
+        guard !isSaving else { return }
+        let removable = temporaryCovers.filter { all || !imageFiles.contains($0) }
+        for url in removable {
+            try? FileManager.default.removeItem(at: url)
+            temporaryCovers.remove(url)
+        }
+    }
+
+    private func requestCoverSuggestions(_ urls: [URL]) {
+        dismissCoverSuggestions()
+        let generation = coverGeneration
+        let candidates = urls.filter { ["3mf", "stl", "obj"].contains($0.pathExtension.lowercased()) }
+        guard !candidates.isEmpty else { return }
+        coverTask = Task { [weak self] in
+            var found: [CoverSuggestion] = []
+            // 被取消或表单已经关闭时，连同刚编码完成的候选一起回收。
+            defer {
+                if Task.isCancelled || self?.coverGeneration != generation {
+                    for item in found { try? FileManager.default.removeItem(at: item.imageURL) }
+                }
+            }
+            for url in candidates {
+                guard !Task.isCancelled else { return }
+                guard let preview = await ModelFilePreviewStore.shared.coverPreview(for: url) else { continue }
+                do {
+                    let encoded = try await DisplayImageEncoder.shared.compress(data: preview.imageData)
+                    try Task.checkCancellation()
+                    let destination = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("makershelf-cover-\(UUID().uuidString).webp")
+                    let saved = try encoded.write(to: destination)
+                    found.append(CoverSuggestion(id: url.standardizedFileURL.path, fileName: url.lastPathComponent,
+                                                 plateCount: preview.plateCount, imageURL: saved,
+                                                 previewLabel: url.pathExtension.lowercased() == "3mf"
+                                                     ? "3MF 包内预览" : "\(url.pathExtension.uppercased()) 几何预览"))
+                } catch {
+                    if Task.isCancelled { return }
+                    AppLog.write(.warning, .image, "封面候选生成失败", detail: "\(url.lastPathComponent)\n\(AppLog.errorDescription(error))")
+                }
+            }
+            guard !Task.isCancelled, let self, self.coverGeneration == generation else { return }
+            self.temporaryCovers.formUnion(found.map(\.imageURL))
+            let modelIDs = Set(self.modelFiles.map { $0.standardizedFileURL.path })
+            self.coverSuggestions = found.filter { modelIDs.contains($0.id) }
+            self.coverSuggestionQuery = ""
+            self.selectedCoverSuggestionID = self.coverSuggestions.first?.id
+            self.showsCoverPrompt = !self.coverSuggestions.isEmpty
+            self.coverTask = nil
+            if self.coverSuggestions.isEmpty { self.cleanupTemporaryCovers() }
+        }
     }
 
     func save(using action: @escaping @MainActor (LocalModelDraft) async throws -> Void) {
@@ -66,30 +172,46 @@ final class LocalModelStore {
             return
         }
         isSaving = true
+        // 保存快照已经确定，不再允许后台候选任务弹窗或修改封面。
+        dismissCoverSuggestions()
         errorMessage = nil
         let snapshot = draft
-        saveTask = Task { [weak self] in
+        AppLog.write(.info, .importing, "开始保存本地模型", detail: "模型文件：\(snapshot.modelFiles.count)；图片：\(snapshot.imageFiles.count)")
+        // 保存任务保留表单到复制退出，关闭窗口后也能回收临时封面，不会提前删掉正在读取的文件。
+        saveTask = Task { [self] in
+            var saved = false
             defer {
-                self?.isSaving = false
-                self?.saveTask = nil
+                isSaving = false
+                saveTask = nil
+                cleanupTemporaryCovers(all: saved || Task.isCancelled)
             }
             do {
                 try await action(snapshot)
+                saved = true
+                AppLog.write(.info, .importing, "本地模型保存完成")
+            } catch is CancellationError {
+                AppLog.write(.info, .importing, "本地模型保存已取消")
             } catch {
-                self?.errorMessage = error.localizedDescription
+                guard !Task.isCancelled else { return }
+                errorMessage = error.localizedDescription
+                AppLog.write(.error, .importing, "本地模型保存失败", detail: AppLog.errorDescription(error))
             }
         }
     }
 
     func cancelSave() {
+        dismissCoverSuggestions()
         saveTask?.cancel()
-        saveTask = nil
+        if saveTask == nil { cleanupTemporaryCovers(all: true) }
     }
 
     private func appendModelFiles(_ urls: [URL]) {
         let allowed: Set<String> = ["3mf", "stl", "obj", "step", "stp", "gcode", "amf"]
         let accepted = urls.filter { allowed.contains($0.pathExtension.lowercased()) }
+        let previous = Set(modelFiles.map { $0.standardizedFileURL.path })
         Self.appendUnique(accepted, to: &modelFiles)
+        let added = modelFiles.filter { !previous.contains($0.standardizedFileURL.path) }
+        if !added.isEmpty { requestCoverSuggestions(added) }
         errorMessage = accepted.count == urls.count ? nil : "已忽略不支持的文件；支持 3MF、STL、OBJ、STEP、STP、GCODE 和 AMF。"
         if title.isEmpty, let first = accepted.first {
             title = first.deletingPathExtension().lastPathComponent

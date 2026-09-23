@@ -11,6 +11,12 @@ final class PreferencesStore {
     var preferredFormat: String {
         didSet { defaults.set(preferredFormat, forKey: "preferredFormat") }
     }
+    var stlPreviewPixelBudget: Int {
+        didSet { defaults.set(stlPreviewPixelBudget, forKey: STLPreviewOptions.pixelKey) }
+    }
+    var stlPreviewTimeoutSeconds: Int {
+        didSet { defaults.set(stlPreviewTimeoutSeconds, forKey: STLPreviewOptions.timeoutKey) }
+    }
     private(set) var archiveURL: URL?
     var errorMessage: String?
     @ObservationIgnored private let defaults: UserDefaults
@@ -23,6 +29,9 @@ final class PreferencesStore {
         let storedLimit = defaults.integer(forKey: "maxConcurrentDownloads")
         maxConcurrentDownloads = storedLimit == 0 ? 2 : min(3, max(1, storedLimit))
         preferredFormat = defaults.string(forKey: "preferredFormat") ?? "全部可用格式"
+        let stlOptions = STLPreviewOptions.current(defaults)
+        stlPreviewPixelBudget = stlOptions.pixelBudget
+        stlPreviewTimeoutSeconds = stlOptions.timeoutSeconds
         if let bookmark = defaults.data(forKey: "archiveBookmark") {
             do {
                 var stale = false
@@ -40,6 +49,12 @@ final class PreferencesStore {
                 errorMessage = "归档目录授权已失效，请重新选择目录。"
             }
         }
+    }
+
+    /// 恢复初始预览预算；修改自动写入本机偏好，新生成的预览会采用这些值。
+    func resetSTLPreviewOptions() {
+        stlPreviewPixelBudget = STLPreviewOptions.defaults.pixelBudget
+        stlPreviewTimeoutSeconds = STLPreviewOptions.defaults.timeoutSeconds
     }
 
     func selectArchiveFolder() {

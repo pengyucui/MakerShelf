@@ -4,6 +4,8 @@ import SwiftUI
 struct LibraryView: View {
     @Bindable var store: LibraryStore
     let downloads: DownloadStore
+    let recovery: ArchiveRecoveryStore
+    let onRecover: () -> Void
     let onImport: () -> Void
     let onDownload: (ModelRecord) -> Void
     let onEditLocal: (ModelRecord) -> Void
@@ -72,15 +74,28 @@ struct LibraryView: View {
                     NoticeBanner(text: message, symbol: "exclamationmark.triangle")
                     Button("重试") { Task { await store.refresh(debounce: false) } }
                         .buttonStyle(QuietButtonStyle())
+                    Button("恢复归档", action: onRecover).buttonStyle(QuietButtonStyle())
                 }
             }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if store.isLibraryEmpty {
-                        EmptyShelf(title: "模型库还是空的",
+                        if recovery.isRunning {
+                            HStack(spacing: 10) {
+                                ProgressView().controlSize(.small)
+                                Text(recovery.message ?? "正在找回已有模型…")
+                            }.frame(maxWidth: .infinity).padding(.vertical, 32)
+                        } else {
+                            EmptyShelf(title: "模型库还是空的",
                                    description: "从模型链接、当前账号或作者导入模型，也可以添加自己的本地创作。",
                                    symbol: "cube.transparent", actionTitle: "添加模型", action: onImport)
+                        }
+                        VStack(spacing: 8) {
+                            Text("更新或重装后找不到原有模型？选择原归档目录即可恢复，无需重新下载。")
+                                .font(.system(size: 12)).foregroundStyle(ShelfTheme.muted)
+                            Button("找回已有模型", action: onRecover).buttonStyle(QuietButtonStyle())
+                        }.frame(maxWidth: .infinity).padding(.bottom, 20)
                     } else if store.records.isEmpty && !store.isLoading {
                         EmptyShelf(title: "没有符合条件的模型",
                                    description: "试试其他来源、作者或下载状态。",

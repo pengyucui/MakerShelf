@@ -4,7 +4,9 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var preferences: PreferencesStore
     let sessions: SessionStore
+    @Bindable var recovery: ArchiveRecoveryStore
     @Binding var tab: SettingsTab
+    let onShowLibrary: () -> Void
 
     var body: some View {
         ScrollView {
@@ -68,12 +70,14 @@ struct SettingsView: View {
                     }
                     Spacer()
                     Button("选择目录") { preferences.selectArchiveFolder() }.buttonStyle(QuietButtonStyle())
+                        .disabled(recovery.isRunning)
                 }
                 if let error = preferences.errorMessage { NoticeBanner(text: error, symbol: "exclamationmark.triangle") }
                 Text("目录通过系统授权选择。下载开始后，模型文件、介绍和图片会写入该目录。")
                     .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted)
               }
             }
+            recoveryPanel
             GlassPanel {
               VStack(alignment: .leading, spacing: 20) {
                 Label("下载偏好", systemImage: "arrow.down.to.line").font(.system(size: 14, weight: .semibold))
@@ -128,6 +132,47 @@ struct SettingsView: View {
             }
             Label("偏好自动保存在本机，无需再次点击保存。", systemImage: "checkmark.circle")
                 .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted)
+        }
+    }
+
+    private var recoveryPanel: some View {
+        GlassPanel {
+            VStack(alignment: .leading, spacing: 14) {
+                Label("找回已有模型", systemImage: "arrow.clockwise.circle")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("更新或重装后模型库为空时，选择原来包含“本地模型”“中文站”或“国际站”的归档总目录。应用会恢复模型、图片和介绍，不会重复复制或下载文件。")
+                    .font(.system(size: 12)).foregroundStyle(ShelfTheme.muted).lineSpacing(4)
+                HStack {
+                    Button("选择原目录并恢复") { recovery.selectAndRestore() }
+                        .buttonStyle(PrimaryButtonStyle()).disabled(recovery.isRunning)
+                    Button("扫描当前目录") { recovery.restore() }
+                        .buttonStyle(QuietButtonStyle())
+                        .disabled(recovery.isRunning || preferences.archiveURL == nil)
+                    if recovery.isRunning {
+                        ProgressView().controlSize(.small)
+                        Button("取消") { recovery.cancel() }.buttonStyle(QuietButtonStyle())
+                    } else {
+                        Button("查看模型库", action: onShowLibrary).buttonStyle(QuietButtonStyle())
+                    }
+                }
+                if let message = recovery.message { NoticeBanner(text: message) }
+                if let error = recovery.errorMessage { NoticeBanner(text: error, symbol: "exclamationmark.triangle") }
+                if recovery.warningCount > 0 {
+                    DisclosureGroup("\(recovery.warningCount) 条恢复提示") {
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(Array(recovery.warnings.enumerated()), id: \.offset) { _, warning in
+                                Text(warning).font(.system(size: 11)).textSelection(.enabled)
+                            }
+                            if recovery.warningCount > recovery.warnings.count {
+                                Text("更多详情请在运行日志的“本地存储”模块查看。")
+                                    .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+                    }
+                }
+                Text("同一模型按原 ID 合并，重复恢复不会生成重复卡片。此入口用于已有 MakerShelf 归档；普通散装模型文件仍从“添加模型 → 本地模型”导入。")
+                    .font(.system(size: 11)).foregroundStyle(ShelfTheme.muted)
+            }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

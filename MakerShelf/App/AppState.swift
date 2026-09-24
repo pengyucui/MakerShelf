@@ -36,6 +36,7 @@ final class AppState {
     let downloads: DownloadStore
     let preferences: PreferencesStore
     let sessions: SessionStore
+    let archiveRecovery: ArchiveRecoveryStore
     let provider: any ModelSourceProviding
     private let catalog: ModelCatalog
     private let localImporter = LocalModelImporter()
@@ -51,6 +52,7 @@ final class AppState {
         self.library = library
         self.preferences = preferences
         self.sessions = sessions
+        self.archiveRecovery = ArchiveRecoveryStore(catalog: catalog, library: library, preferences: preferences)
         self.provider = MakerWorldSource(client: client, sessions: { site in await sessions.snapshot(site) })
         self.downloads = DownloadStore(
             executor: ArchiveDownloadExecutor(
@@ -139,6 +141,7 @@ final class AppState {
     }
 
     func shutdown() {
+        archiveRecovery.cancel()
         downloads.shutdown()
         preferences.stopAccess()
         AppLog.shared.flush()

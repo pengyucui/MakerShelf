@@ -703,21 +703,11 @@ private struct ArchiveWriter {
     }
 
     func writeMetadata(_ record: ModelRecord) throws {
-        let payload: [String: Any] = [
-            "id": record.id,
-            "site": record.site.rawValue,
-            "designId": record.designId as Any,
-            "modelId": record.modelId as Any,
-            "title": record.title,
-            "author": record.author,
-            "authorId": record.authorId as Any,
-            "sourceURL": record.sourceURL as Any,
-            "license": record.license as Any,
-            "archivedAt": ISO8601DateFormatter().string(from: record.archivedAt ?? Date()),
-            "files": record.files.map { ["name": $0.name, "kind": $0.kind, "path": $0.relativePath as Any] }
-        ]
-        let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: metadataURL, options: .atomic)
+        // 归档本身保存完整资料，更新或重装后不再依赖唯一的 library.json 恢复分类、封面及介绍。
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(record).write(to: metadataURL, options: .atomic)
     }
 }
 

@@ -22,62 +22,29 @@ jobs:
       - name: 检出源码
         uses: actions/checkout@v7.0.1
 
-      - name: 校验版本
+      - name: 校验发布说明
         shell: bash
         run: |
           set -euo pipefail
-          tag_version="${GITHUB_REF_NAME#v}"
-          project_version="$(sed -n 's/.*MARKETING_VERSION = "\([^"]*\)".*/\1/p' MakerShelf.xcodeproj/project.pbxproj | sort -u)"
-          if [[ -z "${project_version}" || "${project_version}" != "${tag_version}" ]]; then
-            echo "标签版本 ${tag_version} 与工程版本 ${project_version:-未找到} 不一致"
-            exit 1
-          fi
           notes=".github/release-notes/${GITHUB_REF_NAME}.md"
-          if [[ ! -f "${notes}" ]]; then
+          if [[ ! -s "${notes}" ]]; then
             echo "缺少 Release 说明：${notes}"
             exit 1
           fi
 
-      - name: 构建 Release App
+      - name: 构建并打包 Release App
         shell: bash
         run: |
           set -euo pipefail
-          xcodebuild \
-            -project MakerShelf.xcodeproj \
-            -scheme MakerShelf \
-            -configuration Release \
-            -derivedDataPath "${RUNNER_TEMP}/MakerShelfDerivedData" \
-            ARCHS="arm64 x86_64" \
-            ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            clean build
-
-      - name: 打包并生成校验值
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          app="${RUNNER_TEMP}/MakerShelfDerivedData/Build/Products/Release/MakerShelf.app"
-          package="MakerShelf-${version}-unsigned-macOS.zip"
-          staging="${RUNNER_TEMP}/MakerShelf-${version}"
-          if [[ ! -d "${app}" ]]; then
-            echo "没有找到构建产物：${app}"
-            exit 1
-          fi
-          mkdir -p "${staging}"
-          ditto "${app}" "${staging}/MakerShelf.app"
-          cp LICENSE NOTICE "${staging}/"
-          ditto -c -k --sequesterRsrc --keepParent "${staging}" "${package}"
-          shasum -a 256 "${package}" > "${package}.sha256"
+          bash scripts/package.sh --version "${GITHUB_REF_NAME#v}" --output dist
 
       - name: 保存 Action 构建产物
         uses: actions/upload-artifact@v7.0.1
         with:
           name: MakerShelf-${{ github.ref_name }}-unsigned-macOS
           path: |
-            MakerShelf-*-unsigned-macOS.zip
-            MakerShelf-*-unsigned-macOS.zip.sha256
+            dist/MakerShelf-*-unsigned-macOS.zip
+            dist/MakerShelf-*-unsigned-macOS.zip.sha256
           if-no-files-found: error
 
       - name: 创建 GitHub Release
@@ -87,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          package="MakerShelf-${version}-unsigned-macOS.zip"
+          package="dist/MakerShelf-${version}-unsigned-macOS.zip"
           notes=".github/release-notes/${GITHUB_REF_NAME}.md"
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" "${package}" "${package}.sha256" --clobber

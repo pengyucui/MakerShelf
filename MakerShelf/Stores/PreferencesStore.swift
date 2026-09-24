@@ -57,7 +57,7 @@ final class PreferencesStore {
         stlPreviewTimeoutSeconds = STLPreviewOptions.defaults.timeoutSeconds
     }
 
-    func selectArchiveFolder() {
+    func selectArchiveFolder(onSelected: (@MainActor () -> Void)? = nil) {
         let panel = NSOpenPanel()
         panel.title = "选择模型归档目录"
         panel.prompt = "选择目录"
@@ -78,6 +78,7 @@ final class PreferencesStore {
                     self.archiveURL = url
                     self.accessingArchive = url.startAccessingSecurityScopedResource()
                     self.errorMessage = nil
+                    onSelected?()
                 } catch { self.errorMessage = "无法保存目录授权：\(error.localizedDescription)" }
             }
         }

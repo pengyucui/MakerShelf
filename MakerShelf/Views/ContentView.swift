@@ -15,6 +15,8 @@ struct ContentView: View {
                     switch app.section {
                     case .library:
                         LibraryView(store: app.library, downloads: app.downloads,
+                                    recovery: app.archiveRecovery,
+                                    onRecover: { app.settingsTab = .storage; app.section = .settings },
                                     onImport: { app.sheet = .importModels },
                                     onDownload: app.download,
                                     onEditLocal: { app.sheet = .editLocal($0) },
@@ -24,7 +26,9 @@ struct ContentView: View {
                                       onImport: { app.sheet = .importModels },
                                       onSettings: { app.settingsTab = .storage; app.section = .settings })
                     case .settings:
-                        SettingsView(preferences: app.preferences, sessions: app.sessions, tab: $app.settingsTab)
+                        SettingsView(preferences: app.preferences, sessions: app.sessions,
+                                     recovery: app.archiveRecovery, tab: $app.settingsTab,
+                                     onShowLibrary: { app.library.query = LibraryQuery(); app.section = .library })
                     case .logs:
                         LogsView()
                     }
@@ -63,6 +67,8 @@ struct ContentView: View {
             Button("知道了", role: .cancel) { app.notice = nil }
         } message: { Text(app.notice ?? "") }
         .onChange(of: app.preferences.maxConcurrentDownloads) { _, value in app.downloads.setConcurrency(value) }
+        .onChange(of: app.preferences.archiveURL) { _, _ in app.archiveRecovery.directoryChanged() }
+        .task { await app.archiveRecovery.restoreIfNeeded() }
         .onReceive(NotificationCenter.default.publisher(for: .shelfFocusSearch)) { _ in
             // 焦点请求保留到模型库重新挂载，避免从设置切回时丢失通知。
             app.section = .library

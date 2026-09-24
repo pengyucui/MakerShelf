@@ -11,12 +11,12 @@ MakerShelf 是原生 SwiftUI macOS 模型管理应用。将 MakerWorld 中文站
 
 ![MakerShelf 模型库与模型详情界面预览](.github/images/makershelf-overview.png)
 
-## 获取 2.0
+## 获取 2.1
 
-前往 [MakerShelf 2.0 Release](https://github.com/pengyucui/MakerShelf/releases/tag/v2.0) 查看版本说明与可用下载。
+前往 [MakerShelf 2.1 Release](https://github.com/pengyucui/MakerShelf/releases/tag/v2.1) 查看版本说明与可用下载。
 
 - 系统要求：**macOS 14 或更新版本**，支持 Apple Silicon 与 Intel。
-- 自动发布资产：`MakerShelf-2.0-unsigned-macOS.zip`，附带 SHA-256 校验文件；资产在发布工作流成功后提供。
+- 自动发布资产：`MakerShelf-2.1-unsigned-macOS.zip`，附带 SHA-256 校验文件；资产在发布工作流成功后提供。
 - 当前自动构建未经过 Developer ID 签名和 Apple 公证，macOS 可能限制直接打开；也可从源码运行。
 - 完整更新记录见 [CHANGELOG](CHANGELOG.md)。
 
@@ -28,6 +28,7 @@ MakerShelf 是原生 SwiftUI macOS 模型管理应用。将 MakerWorld 中文站
 | 模型详情 | 图片与完整图文介绍、模型文件、归档信息、来源链接；窄窗口使用详情弹窗 |
 | 站点导入 | 单模型链接、当前账号收藏 / 发布内容、指定作者的公开作品 |
 | 本地模型 | 拖放或选择文件，新建与编辑资料、模型文件、封面和展示图片 |
+| 归档恢复 | 更新或重装后重新选择原 MakerShelf 归档目录，恢复模型、封面和文件关联 |
 | 下载管理 | 进度、暂停、继续、取消与重试；同来源去重、并发上限和下载摘要 |
 | 文件预览 | 3MF 包内图片，STL / OBJ 静态几何预览；支持放大与失败重试 |
 | 图片归档 | 展示图优先压缩为最长边 1600 像素的 WebP，失败回退 JPEG 或原文件 |
@@ -77,6 +78,22 @@ MakerShelf 是原生 SwiftUI macOS 模型管理应用。将 MakerWorld 中文站
 
 模型库索引和偏好保存在本机，重启后保留。来源文件之后发生变化不会自动同步，可进入编辑页替换文件并保存。保存编辑时先建立完整临时归档，成功后再替换原归档。
 
+## 更新或重装后找回模型
+
+此功能从 2.1 开始提供。
+
+模型文件保存在你选择的归档目录里，模型列表索引和目录授权则保存在应用的本机数据中。如果更新、重装或更换构建后模型库为空，不必重新导入或下载全部模型：
+
+1. 点击空模型库中的「找回已有模型」，或打开「设置 → 存储与下载」。
+2. 在「找回已有模型」中点击「选择原目录并恢复」，选择以前的**归档总目录**，即包含「本地模型」「中文站」或「国际站」的目录，不要选择单个模型文件夹。
+3. 等待扫描完成，查看新增、更新、已存在数量和恢复提示，再点击「查看模型库」。已经选择了正确目录时，可直接点「扫描当前目录」。
+
+恢复读取各模型的 `metadata.json`、`models/`、`images/` 和 `description.html`，保留模型 ID、来源、作者与资料，并按实际位置重建文件和图片路径。原文件不复制、不移动、不改写；同一 ID 合并，重复恢复不会生成重复卡片。原目录整体搬家后，也可以选择新位置恢复。
+
+兼容旧版站点下载的精简资料与本地模型的完整资料。旧资料没有保存的分类、材料等信息，优先从现有索引保留；原索引也丢失时使用默认值并给出提示。后续新下载会在归档中保存完整资料。
+
+启动时，如果目录授权仍有效而索引为空或无法读取，会自动尝试恢复一次；如果授权丢失，需要通过系统目录选择器重新授权。损坏的索引会先备份再重建，无法备份则停止恢复。缺失、损坏、重复 ID 或无法读取的模型会给出提示；没有有效 `metadata.json` 的普通文件夹不属于此恢复入口，仍需通过「添加模型 → 本地模型」整理。
+
 ## 排查问题
 
 遇到下载、登录或预览问题时，打开「运行日志」，按模块、关键词与「仅本次运行」筛选，展开记录查看原因。预览失败可先点击文件行的「重试预览」；账号页提示持久保存失败时，可点击「重新保存登录状态」。
@@ -89,7 +106,30 @@ MakerShelf 是原生 SwiftUI macOS 模型管理应用。将 MakerWorld 中文站
 2. 选择共享 Scheme **MakerShelf**，运行目标为 **My Mac**。
 3. 启动后在设置中选择归档目录并连接需要使用的站点。
 
-工程内置 `ThirdParty/libwebp` 本地 Swift Package，无需在线拉取该依赖。其许可随源码及应用资源分发。本次 2.0 发布整理未在本机重新编译或运行测试；自动发布安装包由 GitHub Actions 构建。
+工程内置 `ThirdParty/libwebp` 本地 Swift Package，无需在线拉取该依赖。其许可随源码及应用资源分发。自动发布安装包由 GitHub Actions 构建。
+
+## 打包与发布脚本
+
+在仓库根目录执行，本地打包需要完整 Xcode：
+
+```bash
+# 构建当前工程版本，生成 Apple Silicon / Intel 通用安装包
+bash scripts/package.sh
+
+# 只检查发布准备情况并显示计划，不创建标签或推送
+bash scripts/release.sh
+
+# 正式推送当前分支和版本标签，触发 GitHub Actions 构建及发布
+bash scripts/release.sh --push
+```
+
+打包产物位于 `dist/`：`MakerShelf-版本-unsigned-macOS.zip` 与同名 `.sha256`；构建日志保存在 `build/logs/`。安装包包含 App、LICENSE 和 NOTICE，未经过 Developer ID 签名或 Apple 公证。本地和 GitHub Actions 共用同一个打包脚本。
+
+构建与登录辅助程序签名固定使用 Apple 工具入口，避免 Anaconda 等环境中的同名命令导致 `Compile Login Helper` 失败。
+
+发布前需自行更新工程版本号与构建号、填写 CHANGELOG 正式版本条目和 `.github/release-notes/v版本.md`，并完成提交。发布脚本默认使用 `origin` 和 `main`，不会自动提交或覆盖已有远端标签。发布新版本时应递增版本号，不复用已有标签。参数、步骤和失败处理见[发布流程](docs/发布流程.md)。
+
+## 目录结构
 
 ```text
 MakerShelf.xcodeproj/       Xcode 工程与共享 Scheme
@@ -101,6 +141,8 @@ MakerShelf/
   Views/                   原生界面
   Resources/               应用图标、图片与示例数据
 ThirdParty/libwebp/         WebP 源码与许可
+scripts/package.sh         本地与自动发布共用的打包脚本
+scripts/release.sh         发布检查、标签与推送脚本
 .github/images/            README 界面图片
 .github/release-notes/      版本发布说明
 .github/workflows/          自动发布工作流

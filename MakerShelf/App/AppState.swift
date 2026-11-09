@@ -58,6 +58,7 @@ final class AppState {
             executor: ArchiveDownloadExecutor(
                 client: client,
                 sessionFor: { site in await sessions.snapshot(site) },
+                refreshSession: { site, rejected in try await sessions.refreshForDownload(site, rejected: rejected) },
                 archiveURL: { try await preferences.scopedArchiveURL() },
                 preferredFormat: { await preferences.preferredFormat }
             ),

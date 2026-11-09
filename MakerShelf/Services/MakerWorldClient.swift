@@ -89,6 +89,14 @@ actor MakerWorldClient {
         if let rotated = Self.findString(result.json, keys: ["refreshToken", "refresh_token"]), !rotated.isEmpty {
             next.refreshToken = rotated
         }
+        // 网页接口同时读取 Cookie 与 Bearer，刷新后不能继续发送旧访问令牌 Cookie。
+        for index in next.cookies.indices where next.site.belongs(cookieDomain: next.cookies[index].domain) {
+            let name = next.cookies[index].name.lowercased()
+            if ["token", "accesstoken", "access_token"].contains(name) { next.cookies[index].value = token }
+            if ["refreshtoken", "refresh_token"].contains(name), let rotated = next.refreshToken {
+                next.cookies[index].value = rotated
+            }
+        }
         next.updatedAt = Date()
         return next
     }
@@ -157,6 +165,14 @@ actor MakerWorldClient {
                 savedFiles.append(ModelFile(id: item.id, name: dest.lastPathComponent, kind: item.kind,
                                             sizeBytes: size, relativePath: writer.relative(dest), remoteHint: nil))
             } catch {
+                try Task.checkCancellation()
+                // 登录失效保留原始错误类型，不包装成普通文件失败，便于重新连接后重试。
+                if let error = error as? ShelfError {
+                    switch error {
+                    case .sessionExpired, .notLoggedIn: throw error
+                    default: break
+                    }
+                }
                 warnings.append("模型文件 \(item.name) 失败：\(error.localizedDescription)")
             }
         }
@@ -311,7 +327,8 @@ actor MakerWorldClient {
     private func downloadFile(item: Downloadable, site: MakerSite, session snapshot: SiteSession?,
                               destination: URL, progress: @escaping @Sendable (Double) async -> Void) async throws {
         if let url = item.directURL {
-            try await downloadBinary(from: url, to: destination, session: snapshot, authorized: item.needsAuth, progress: progress)
+            try await downloadBinary(from: url, to: destination, session: snapshot, authorized: item.needsAuth,
+                                     referer: site, progress: progress)
             return
         }
         if let designId = item.designId, let key = item.fileKey {
@@ -319,22 +336,29 @@ actor MakerWorldClient {
                                               session: snapshot, destination: destination, progress: progress)
             return
         }
+        if let instanceId = item.instanceId {
+            // 网页会话必须先访问 MakerWorld 同站点接口，不能直接当作 Bambu 云端登录凭据。
+            var components = URLComponents(url: site.webAPIRoot.appendingPathComponent("design-service/instance/\(instanceId)/f3mf"),
+                                           resolvingAgainstBaseURL: false)
+            components?.queryItems = [URLQueryItem(name: "type", value: "download")]
+            guard let url = components?.url else { throw ShelfError.downloadFailed("无法构造下载地址。") }
+            try await fetchModelFile(from: url, site: site, session: snapshot,
+                                     destination: destination, progress: progress)
+            return
+        }
         if let profileId = item.profileId, let modelId = item.modelId, let snapshot {
             do {
                 let payload = try await fetchJSON(site: site, path: "iot-service/api/user/profile/\(profileId)",
                                              session: snapshot, query: ["model_id": modelId])
                 if let raw = Self.string(payload, keys: ["url", "downloadUrl", "fileUrl"]), let url = URL(string: raw) {
-                    try await downloadBinary(from: url, to: destination, session: nil, authorized: false, progress: progress)
+                    try await downloadBinary(from: url, to: destination, session: nil, authorized: false,
+                                             referer: site, progress: progress)
                     return
                 }
-            } catch { }
-        }
-        if let instanceId = item.instanceId {
-            var components = URLComponents(string: "https://\(site.apiHost)/v1/design-service/instance/\(instanceId)/f3mf")
-            components?.queryItems = [URLQueryItem(name: "type", value: "download")]
-            guard let downloadURL = components?.url else { throw ShelfError.downloadFailed("无法构造下载地址。") }
-            try await downloadBinary(from: downloadURL, to: destination, session: snapshot, authorized: true, progress: progress)
-            return
+            } catch {
+                try Task.checkCancellation()
+                throw error
+            }
         }
         throw ShelfError.downloadFailed("没有可用的下载地址：\(item.name)")
     }
@@ -361,6 +385,7 @@ actor MakerWorldClient {
                 } catch let error as ShelfError where error.isSessionExpired {
                     throw error
                 } catch {
+                    try Task.checkCancellation()
                     lastError = error
                 }
             }
@@ -374,31 +399,45 @@ actor MakerWorldClient {
         var components = URLComponents(string: base)
         components?.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         guard let url = components?.url else { throw ShelfError.downloadFailed("无法构造模型文件地址。") }
+        try await fetchModelFile(from: url, site: site, session: snapshot, destination: destination, progress: progress)
+    }
+
+    /// 同一下载入口可能直接返回文件，也可能返回 JSON 中的临时文件地址，两种响应都要支持。
+    private func fetchModelFile(from url: URL, site: MakerSite, session snapshot: SiteSession?, destination: URL,
+                                progress: @escaping @Sendable (Double) async -> Void) async throws {
         try await throttle()
         var request = URLRequest(url: url)
-        request.setValue(snapshot?.userAgent ?? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
-        request.setValue("https://\(site.domain)/", forHTTPHeaderField: "Referer")
+        guard snapshot == nil || snapshot?.site == site else { throw ShelfError.wrongSite }
+        Self.applyClientHeaders(&request, site: site, channel: url.host == site.apiHost ? .cloud : .site,
+                                userAgent: snapshot?.userAgent, hasBody: false)
         apply(snapshot, to: &request)
         let (temp, response) = try await session.download(for: request)
         defer { try? FileManager.default.removeItem(at: temp) }
         guard let http = response as? HTTPURLResponse else { throw ShelfError.downloadFailed("模型文件响应无效。") }
-        if http.statusCode == 401 { throw ShelfError.sessionExpired(site) }
-        guard (200..<300).contains(http.statusCode) else { throw ShelfError.http(http.statusCode, "模型文件下载失败") }
+        try validateDownloadResponse(http, requestedURL: url, site: site, session: snapshot, authorized: true, errorFile: temp)
         let header = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
         let handle = try FileHandle(forReadingFrom: temp)
-        let prefix = try handle.read(upToCount: 1) ?? Data()
+        let prefix = try handle.read(upToCount: 512) ?? Data()
         try handle.close()
-        if prefix.first == UInt8(ascii: "<") {
-            throw ShelfError.downloadFailed("站点返回了网页而不是模型文件。")
+        let first = prefix.first { ![UInt8(9), 10, 13, 32].contains($0) }
+        if header.contains("html") || first == UInt8(ascii: "<") {
+            AppLog.write(.warning, .download, "模型下载返回网页", detail: "\(site.title)；HTTP \(http.statusCode)；接口：\(url.path)")
+            throw ShelfError.downloadFailed("站点返回了网页而不是模型文件。请在官方网页检查登录状态并完成站点验证后重试。")
         }
-        if header.contains("json") || prefix.first == UInt8(ascii: "{") || prefix.first == UInt8(ascii: "[") {
+        if header.contains("json") || first == UInt8(ascii: "{") || first == UInt8(ascii: "[") {
+            guard (try temp.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 1_048_576 else {
+                throw ShelfError.downloadFailed("下载地址响应过大，请稍后重试。")
+            }
             let data = try Data(contentsOf: temp)
             let json = try JSONSerialization.jsonObject(with: data)
             guard let raw = Self.findString(json, keys: ["url", "downloadUrl", "fileUrl", "modelUrl"]),
                   let fileURL = Self.modelFileURL(raw) else {
                 throw ShelfError.downloadFailed("站点没有返回模型文件地址。")
             }
-            try await downloadBinary(from: fileURL, to: destination, session: nil, authorized: false, referer: site, progress: progress)
+            // 站点内的二次地址继续使用该站点会话，外部文件服务器只使用临时地址，不携带登录凭据。
+            let requiresSession = Self.isDownloadAPI(fileURL, site: site)
+            try await downloadBinary(from: fileURL, to: destination, session: requiresSession ? snapshot : nil,
+                                     authorized: requiresSession, referer: site, progress: progress)
             return
         }
         try Task.checkCancellation()
@@ -425,20 +464,71 @@ actor MakerWorldClient {
             request.setValue("https://\(referer.domain)/", forHTTPHeaderField: "Referer")
         }
         if authorized {
+            guard let site = referer ?? snapshot?.site, Self.isDownloadAPI(url, site: site),
+                  snapshot == nil || snapshot?.site == site else { throw ShelfError.wrongSite }
             apply(snapshot, to: &request)
         }
         let (temp, response) = try await session.download(for: request)
+        defer { try? FileManager.default.removeItem(at: temp) }
         guard let http = response as? HTTPURLResponse else { throw ShelfError.downloadFailed("下载响应无效。") }
-        if http.statusCode == 401 || http.statusCode == 403 {
-            throw snapshot == nil ? ShelfError.notLoggedIn(.international) : ShelfError.downloadFailed("没有下载权限或登录已过期。")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw ShelfError.http(http.statusCode, "下载失败")
+        try validateDownloadResponse(http, requestedURL: url, site: referer ?? snapshot?.site,
+                                     session: snapshot, authorized: authorized, errorFile: temp)
+        let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        guard !contentType.contains("html"), !contentType.contains("json") else {
+            throw ShelfError.downloadFailed("下载返回了网页或错误资料，没有收到文件。请在官方网页确认该文件可下载后重试。")
         }
         try Task.checkCancellation()
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: temp, to: destination)
         await progress(1)
+    }
+
+    private static func isDownloadAPI(_ url: URL, site: MakerSite) -> Bool {
+        let host = url.host?.lowercased()
+        return host == site.domain || host == "www.\(site.domain)" || host == site.apiHost
+    }
+
+    /// 站点接口的 401 或明确要求登录的 403 才表示会话失效；文件服务器拒绝不能误报为账号问题。
+    private func validateDownloadResponse(_ http: HTTPURLResponse, requestedURL: URL, site: MakerSite?,
+                                          session snapshot: SiteSession?, authorized: Bool, errorFile: URL) throws {
+        guard !(200..<300).contains(http.statusCode) else { return }
+        let fromAPI = site.map {
+            authorized && Self.isDownloadAPI(requestedURL, site: $0)
+                && Self.isDownloadAPI(http.url ?? requestedURL, site: $0)
+        } ?? false
+        // MakerWorld 也会用 403 + 明确要求登录的 JSON 表示认证失败；只识别确定的提示，不将所有 403 当作过期。
+        let challenged = http.value(forHTTPHeaderField: "cf-mitigated")?.lowercased() == "challenge"
+        let loginRequired = !challenged && fromAPI && http.statusCode == 403 && Self.requiresLogin(errorFile)
+        // 仅保留状态、主机及接口路径，不记录 Cookie、令牌、响应正文或临时地址查询参数。
+        let path = fromAPI ? requestedURL.path : "文件下载"
+        AppLog.write(.warning, .download, "下载请求被拒绝",
+                     detail: "站点：\(site?.title ?? "文件服务器")；HTTP \(http.statusCode)；来源：\(fromAPI ? "站点接口" : "文件服务器")；主机：\(http.url?.host ?? requestedURL.host ?? "未知")；接口：\(path)；明确要求登录：\(loginRequired ? "是" : "否")")
+        if challenged {
+            throw ShelfError.downloadFailed("下载触发了站点安全验证（HTTP \(http.statusCode)），请在官方网页完成验证后重试。")
+        }
+        if fromAPI, let site, http.statusCode == 401 || loginRequired {
+            throw snapshot == nil ? ShelfError.notLoggedIn(site) : ShelfError.sessionExpired(site)
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            if fromAPI {
+                throw ShelfError.downloadFailed("站点拒绝下载（HTTP \(http.statusCode)）。请用同一账号在官方网页确认该文件的下载权限，并检查是否需要完成站点验证。")
+            }
+            throw ShelfError.downloadFailed("文件服务器拒绝下载（HTTP \(http.statusCode)），下载链接可能已过期或访问受限，请重试；若持续失败，请在官方网页确认能否下载。")
+        }
+        if http.statusCode == 429 { throw ShelfError.rateLimited }
+        throw ShelfError.http(http.statusCode, "下载失败")
+    }
+
+    /// 只读取有限大小的错误 JSON 用于分类，原文不写入日志或错误消息。
+    private static func requiresLogin(_ file: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return false }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 16_385), data.count <= 16_384,
+              let json = try? JSONSerialization.jsonObject(with: data),
+              let message = findString(json, keys: ["error", "message", "msg"])?.lowercased() else { return false }
+        return message.contains("please log in to download") || message.contains("please login to download")
+            || message.contains("token has expired") || message.contains("token is expired")
+            || message.contains("请先登录") || message.contains("登录已过期")
     }
 
     private enum Channel { case site, cloud }

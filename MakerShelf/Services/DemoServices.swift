@@ -22,17 +22,26 @@ struct MakerWorldSource: ModelSourceProviding {
 struct ArchiveDownloadExecutor: DownloadExecuting {
     let client: MakerWorldClient
     let sessionFor: @Sendable (MakerSite) async -> SiteSession?
+    let refreshSession: @Sendable (MakerSite, SiteSession) async throws -> SiteSession
     let archiveURL: @Sendable () async throws -> URL
     let preferredFormat: @Sendable () async -> String
 
     func run(model: ModelRecord, startingAt: Double,
              progress: @escaping @Sendable (Double, String) async -> Void) async throws -> ArchiveResult {
-        let session = await sessionFor(model.site)
-        if session == nil { throw ShelfError.notLoggedIn(model.site) }
+        guard let session = await sessionFor(model.site) else { throw ShelfError.notLoggedIn(model.site) }
         let folder = try await archiveURL()
         let format = await preferredFormat()
         await progress(max(startingAt, 0.02), "准备归档目录")
-        return try await client.downloadDesign(record: model, session: session, format: format, folder: folder, progress: progress)
+        do {
+            return try await client.downloadDesign(record: model, session: session, format: format, folder: folder, progress: progress)
+        } catch let error as ShelfError where error.isSessionExpired {
+            // 只在站点明确拒绝会话时刷新一次，权限、风控和 CDN 错误不能触发反复登录或重试。
+            try Task.checkCancellation()
+            await progress(max(startingAt, 0.02), "正在刷新站点登录")
+            let refreshed = try await refreshSession(model.site, session)
+            try Task.checkCancellation()
+            return try await client.downloadDesign(record: model, session: refreshed, format: format, folder: folder, progress: progress)
+        }
     }
 }
 

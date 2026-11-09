@@ -17,6 +17,7 @@ final class SessionStore {
     @ObservationIgnored private var restoringSites: Set<MakerSite> = []
     @ObservationIgnored private var didRestoreAll = false
     @ObservationIgnored private var restoringAll = false
+    @ObservationIgnored private var downloadRefreshTasks: [MakerSite: Task<SiteSession, Error>] = [:]
 
     init(client: MakerWorldClient) {
         self.client = client
@@ -28,6 +29,35 @@ final class SessionStore {
     func hasLoaded(_ site: MakerSite) -> Bool { loadedSites.contains(site) }
     var hasLoadedAnySite: Bool { !loadedSites.isEmpty }
     func connectedSites() -> Set<MakerSite> { Set(MakerSite.allCases.filter(isConnected)) }
+
+    /// 下载会话明确失效时才调用；同站点的并发下载共享刷新，避免同时轮换同一 refreshToken。
+    func refreshForDownload(_ site: MakerSite, rejected: SiteSession) async throws -> SiteSession {
+        guard let current = snapshots[site] else { throw ShelfError.notLoggedIn(site) }
+        guard current.site == site, rejected.site == site else { throw ShelfError.wrongSite }
+        if let task = downloadRefreshTasks[site] { return try await task.value }
+        if current.token != rejected.token || current.updatedAt != rejected.updatedAt { return current }
+        let task = Task { () async throws -> SiteSession in
+            AppLog.write(.info, .account, "下载会话失效，尝试刷新", detail: site.title)
+            do {
+                let refreshed = try await client.refresh(current)
+                let profile = try await client.profile(site: site, session: refreshed)
+                // 等待网络期间若用户已断开或重新登录，旧刷新结果不能覆盖用户的新操作。
+                guard let latest = snapshots[site] else { throw ShelfError.notLoggedIn(site) }
+                guard latest.token == current.token, latest.updatedAt == current.updatedAt else { return latest }
+                var next = refreshed
+                apply(profile, to: &next, site: site, resolved: site)
+                AppLog.write(.info, .account, "下载会话已刷新", detail: site.title)
+                return next
+            } catch {
+                // 不改写当前会话；网络错误不能把账号误标为过期，更不能清除已保存的登录凭据。
+                AppLog.write(.warning, .account, "下载会话刷新失败", detail: "\(site.title)\n\(AppLog.errorDescription(error))")
+                throw error
+            }
+        }
+        downloadRefreshTasks[site] = task
+        defer { downloadRefreshTasks[site] = nil }
+        return try await task.value
+    }
 
     func displayName(_ site: MakerSite) -> String {
         switch states[site] {

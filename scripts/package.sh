@@ -77,7 +77,11 @@ app_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/
 [[ "$app_version" == "$VERSION" && "$app_build" == "$BUILD_NUMBER" ]] || fail "App 内的版本号与工程不一致。"
 # 主程序与登录辅助程序都必须包含两种架构，避免 Intel 用户下载后无法登录。
 for executable in MakerShelf MakerShelfLogin; do
-    /usr/bin/xcrun lipo "$app/Contents/MacOS/$executable" -verify_arch arm64 x86_64 || fail "$executable 缺少通用架构。"
+    # 一次读取架构列表，避免部分 Xcode 版本对 -verify_arch 多参数的解析差异。
+    architectures="$(/usr/bin/xcrun lipo "$app/Contents/MacOS/$executable" -archs)" || fail "无法读取 $executable 的架构。"
+    for architecture in arm64 x86_64; do
+        [[ " $architectures " == *" $architecture "* ]] || fail "$executable 缺少 $architecture 架构。"
+    done
 done
 
 package_name="MakerShelf-${VERSION}-unsigned-macOS.zip"
